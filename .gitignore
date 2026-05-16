@@ -1,0 +1,76 @@
+# =========================
+# AJTrade
+# =========================
+
+# --- OS / misc ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+
+# --- Logs ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Editors / IDEs ---
+.vscode/
+.idea/
+*.iml
+
+# --- Environment files / secrets ---
+# Never commit real secrets.
+.env
+.env.*
+*.env
+
+# Allow committing example/template env files.
+!.env.example
+!.env*.example
+!.env.*.example
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+dist/
+coverage/
+.nyc_output/
+.cache/
+.turbo/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python build artifacts
+build/
+dist/
+
+# --- Local databases / artifacts ---
+*.sqlite
+*.sqlite3
+
+# --- Keys / certs (just in case) ---
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks

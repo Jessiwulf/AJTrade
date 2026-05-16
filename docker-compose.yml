@@ -1,0 +1,28 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ajtrade
+      POSTGRES_PASSWORD: ajtrade
+      POSTGRES_DB: ajtrade_db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./backend/app/models/local_schema.sql:/docker-entrypoint-initdb.d/01_local_schema.sql:ro
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://ajtrade:ajtrade@db:5432/ajtrade_db
+      AJTRADE_DATA_KEY: replace-this-with-secure-32-byte
+      AJTRADE_DEV_DISABLE_SECURE_COOKIE: "1"
+      AJTRADE_DEV_RETURN_TOKENS: "1"
+    ports:
+      - "8000:8000"
+
+volumes:
+  db-data:
