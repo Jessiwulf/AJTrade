@@ -1,0 +1,79 @@
+:root {
+  --aj-bg: #ffffff;
+  --aj-surface: #f8f9fa;
+  --aj-border: rgba(15, 23, 42, 0.10);
+  --aj-border-soft: rgba(15, 23, 42, 0.08);
+  --aj-border-strong: rgba(15, 23, 42, 0.25);
+
+  --aj-text: #0f172a;
+  --aj-text-muted: #475569;
+  --aj-indigo: #1e3a8a;
+  --aj-indigo-soft: rgba(30, 58, 138, 0.55);
+  --aj-ink: #0b1224;
+
+  --aj-cta-from: #fbbf24;
+  --aj-cta-to: #f59e0b;
+  --aj-cta-gradient: linear-gradient(135deg, var(--aj-cta-from), var(--aj-cta-to));
+  --aj-accent-soft: rgba(245, 158, 11, 0.14);
+  --aj-accent-border: rgba(245, 158, 11, 0.28);
+  --aj-accent-border-strong: rgba(245, 158, 11, 0.35);
+
+  --aj-positive: #16a34a;
+  --aj-negative: #dc2626;
+
+  --aj-radius-sm: 12px;
+  --aj-radius-md: 16px;
+  --aj-radius-lg: 22px;
+
+  --aj-shadow-sm: 0 8px 24px rgba(15, 23, 42, 0.08);
+  --aj-shadow-md: 0 18px 48px rgba(15, 23, 42, 0.10);
+
+  --aj-nav-bg: rgba(255, 255, 255, 0.86);
+  --aj-overlay-white: rgba(255, 255, 255, 0.35);
+
+  --aj-focus: rgba(245, 158, 11, 0.35);
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: var(--aj-bg);
+  color: var(--aj-text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+:focus-visible {
+  outline: 3px solid var(--aj-focus);
+  outline-offset: 2px;
+}
