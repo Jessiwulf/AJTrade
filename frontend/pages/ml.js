@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { apiFetch, BACKEND_URL, getAccessToken, setAccessToken } from '../lib/api'
+import { useSession } from '../components/AppShell'
 
 function Section({ title, children }) {
   return (
@@ -12,10 +13,27 @@ function Section({ title, children }) {
 }
 
 export default function MLPanel() {
+  const { isGuest } = useSession()
   const [symbol, setSymbol] = useState('AAPL')
   const [lookbackDays, setLookbackDays] = useState(60)
   const [period, setPeriod] = useState('30d')
   const [newsApiKey, setNewsApiKey] = useState('')
+
+  const [guestSymbol, setGuestSymbol] = useState('AAPL')
+  const [guestPrompt, setGuestPrompt] = useState('Explain the public market context in plain language.')
+  const [guestRange, setGuestRange] = useState('1mo')
+  const [guestLlm, setGuestLlm] = useState(null)
+  const [guestErr, setGuestErr] = useState(null)
+
+  // V2 (FinBERT + LightGBM + SHAP + Dual-LLM)
+  const [v2Text, setV2Text] = useState('Apple shares rise after strong earnings report...')
+  const [v2Sentiment, setV2Sentiment] = useState(null)
+  const [v2Train, setV2Train] = useState(null)
+  const [v2Signal, setV2Signal] = useState(null)
+  const [v2Shap, setV2Shap] = useState(null)
+  const [v2Prompt, setV2Prompt] = useState('Explain what drove the prediction in plain language.')
+  const [v2Preference, setV2Preference] = useState('open-source')
+  const [v2Llm, setV2Llm] = useState(null)
 
   const [tokenPreview, setTokenPreview] = useState(null)
 
@@ -119,11 +137,165 @@ export default function MLPanel() {
     }
   }
 
+  async function v2AnalyzeSentiment() {
+    try {
+      setErr(null)
+      const data = await apiFetch('/api/ml/v2/sentiment/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: v2Text }),
+      })
+      setV2Sentiment(data)
+    } catch (e) {
+      setErr(e.message)
+    }
+  }
+
+  async function v2TrainModel() {
+    try {
+      setErr(null)
+      setV2Shap(null)
+      setV2Signal(null)
+      setV2Llm(null)
+      const data = await apiFetch('/api/ml/v2/forecaster/train', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, lookback_days: Number(lookbackDays), max_articles: 60 }),
+      })
+      setV2Train(data)
+    } catch (e) {
+      setErr(e.message)
+    }
+  }
+
+  async function v2GetSignal() {
+    try {
+      setErr(null)
+      const data = await apiFetch('/api/ml/v2/forecaster/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, period, max_articles: 60 }),
+      })
+      setV2Signal(data)
+    } catch (e) {
+      setErr(e.message)
+    }
+  }
+
+  async function v2GetShap() {
+    try {
+      setErr(null)
+      setV2Llm(null)
+      const data = await apiFetch('/api/ml/v2/forecaster/shap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, period, max_articles: 60 }),
+      })
+      setV2Shap(data)
+    } catch (e) {
+      setErr(e.message)
+    }
+  }
+
+  async function v2ExplainWithLLM() {
+    try {
+      setErr(null)
+      if (!v2Shap?.shap) {
+        throw new Error('Run V2 SHAP first to produce shap_context')
+      }
+      const data = await apiFetch('/api/ml/v2/llm/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_preference: v2Preference,
+          shap_context: v2Shap,
+          prompt: v2Prompt,
+        }),
+      })
+      setV2Llm(data)
+    } catch (e) {
+      setErr(e.message)
+    }
+  }
+
+  async function guestExplain() {
+    try {
+      setGuestErr(null)
+      setGuestLlm(null)
+      const data = await apiFetch('/api/ml/v2/public/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: guestSymbol,
+          prompt: guestPrompt,
+          range: guestRange,
+        }),
+      })
+      setGuestLlm(data)
+    } catch (e) {
+      setGuestErr(e.message)
+    }
+  }
+
   useEffect(() => {
+    if (isGuest) {
+      setTokenPreview(null)
+      setMe(null)
+      return
+    }
     refreshMe()
     refreshVault()
     setTokenPreview(getAccessToken())
-  }, [])
+  }, [isGuest])
+
+  if (isGuest) {
+    return (
+      <main style={{ padding: 24, fontFamily: 'Arial' }}>
+        <h2>Guest Market Analysis</h2>
+        <p>
+          Public visitors can query the LLM for the five featured assets only: BTC, ETH, AAPL, MSFT, and TSLA.
+        </p>
+        <Section title="Guest LLM">
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 8, maxWidth: 520 }}>
+            <label>Asset</label>
+            <select value={guestSymbol} onChange={(e) => setGuestSymbol(e.target.value)}>
+              {['BTC', 'ETH', 'AAPL', 'MSFT', 'TSLA'].map((asset) => (
+                <option key={asset} value={asset}>
+                  {asset}
+                </option>
+              ))}
+            </select>
+
+            <label>Chart range</label>
+            <select value={guestRange} onChange={(e) => setGuestRange(e.target.value)}>
+              <option value="1d">1D</option>
+              <option value="1mo">1M</option>
+              <option value="1y">1Y</option>
+              <option value="max">MAX</option>
+            </select>
+
+            <label>Prompt</label>
+            <textarea
+              rows={4}
+              value={guestPrompt}
+              onChange={(e) => setGuestPrompt(e.target.value)}
+              style={{ width: '100%' }}
+            />
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <button onClick={guestExplain}>Ask LLM</button>
+          </div>
+          {guestErr ? <p style={{ color: 'crimson' }}>Error: {guestErr}</p> : null}
+          <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(guestLlm, null, 2)}</pre>
+        </Section>
+
+        <p style={{ marginTop: 20 }}>
+          <Link href="/login">Sign in</Link> | <Link href="/signup">Register</Link>
+        </p>
+      </main>
+    )
+  }
 
   return (
     <main style={{ padding: 24, fontFamily: 'Arial' }}>
@@ -196,6 +368,59 @@ export default function MLPanel() {
           </button>
         </div>
         {err ? <p style={{ color: 'crimson' }}>Error: {err}</p> : null}
+      </Section>
+
+      <Section title="V2 AI (FinBERT + LightGBM + SHAP + Dual-LLM)">
+        <p style={{ marginTop: 0, color: '#555' }}>
+          Uses new backend endpoints under <code>/api/ml/v2</code>. Train first, then request SHAP, then optionally ask
+          the LLM to summarize using only SHAP context.
+        </p>
+
+        <h4>FinBERT sentiment (single text)</h4>
+        <div>
+          <textarea
+            value={v2Text}
+            onChange={(e) => setV2Text(e.target.value)}
+            rows={4}
+            style={{ width: '100%', maxWidth: 760 }}
+          />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={v2AnalyzeSentiment}>Analyze sentiment</button>
+        </div>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(v2Sentiment, null, 2)}</pre>
+
+        <h4>Forecaster (v2)</h4>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={v2TrainModel}>Train v2 model</button>
+          <button onClick={v2GetSignal} style={{ marginLeft: 8 }}>
+            Get signal
+          </button>
+          <button onClick={v2GetShap} style={{ marginLeft: 8 }}>
+            Get SHAP
+          </button>
+        </div>
+        <h5>Train result</h5>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(v2Train, null, 2)}</pre>
+        <h5>Signal result</h5>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(v2Signal, null, 2)}</pre>
+        <h5>SHAP result</h5>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(v2Shap, null, 2)}</pre>
+
+        <h4>LLM explanation (uses only SHAP context)</h4>
+        <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 8, maxWidth: 760 }}>
+          <label>LLM preference</label>
+          <select value={v2Preference} onChange={(e) => setV2Preference(e.target.value)} style={{ maxWidth: 240 }}>
+            <option value="open-source">open-source</option>
+            <option value="custom">custom</option>
+          </select>
+          <label>Prompt</label>
+          <input value={v2Prompt} onChange={(e) => setV2Prompt(e.target.value)} />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={v2ExplainWithLLM}>Generate explanation</button>
+        </div>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(v2Llm, null, 2)}</pre>
       </Section>
 
       <Section title="Results">

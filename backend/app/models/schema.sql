@@ -2,9 +2,18 @@
 
 -- Note: Supabase provides `auth.users`; keep a `profiles` table for user metadata.
 
+DO $$ BEGIN
+  CREATE TYPE user_role AS ENUM ('guest', 'authenticated_user', 'admin');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
 CREATE TABLE profiles (
   id uuid PRIMARY KEY REFERENCES auth.users ON DELETE CASCADE,
   full_name text,
+  avatar_url text,
+  role user_role NOT NULL DEFAULT 'authenticated_user',
+  suspended_at timestamptz,
   created_at timestamptz DEFAULT now()
 );
 

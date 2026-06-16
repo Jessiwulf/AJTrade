@@ -19,6 +19,8 @@ export default function ApiKeysPage() {
   const [newsApiKey, setNewsApiKey] = useState('')
   const [alpacaKeyId, setAlpacaKeyId] = useState('')
   const [alpacaSecretKey, setAlpacaSecretKey] = useState('')
+  const [settradeAppId, setSettradeAppId] = useState('')
+  const [settradeAppSecret, setSettradeAppSecret] = useState('')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState(null)
 
@@ -103,6 +105,51 @@ export default function ApiKeysPage() {
       setMessage('Alpaca keys saved')
     } catch (e) {
       setMessage(`Error: ${e.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function saveSettradeKeys() {
+    const appId = settradeAppId.trim()
+    const appSecret = settradeAppSecret.trim()
+    if (!appId || !appSecret) return
+    setLoading(true)
+    setMessage(null)
+    try {
+      await apiFetch('/api/vault/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'settrade_app_id', api_key: appId }),
+      })
+      await apiFetch('/api/vault/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'settrade_app_secret', api_key: appSecret }),
+      })
+      setSettradeAppId('')
+      setSettradeAppSecret('')
+      await refresh()
+      setMessage('Settrade App Id / App Secret saved')
+    } catch (e) {
+      setMessage(`Error: ${e.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function testSettradeKeys() {
+    setLoading(true)
+    setMessage(null)
+    try {
+      await apiFetch('/api/vault/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'settrade' }),
+      })
+      setMessage('Settrade: OK')
+    } catch (e) {
+      setMessage(`Error: Settrade: ${e.message}`)
     } finally {
       setLoading(false)
     }
@@ -194,8 +241,8 @@ export default function ApiKeysPage() {
               type="password"
               value={alpacaKeyId}
               onChange={(e) => setAlpacaKeyId(e.target.value)}
-              placeholder="Paste Alpaca key id"
-              aria-label="Alpaca key id"
+              placeholder="Paste Alpaca key ID"
+              aria-label="Alpaca key ID"
             />
           </div>
           <div className={styles.field}>
@@ -206,8 +253,8 @@ export default function ApiKeysPage() {
                 type="password"
                 value={alpacaSecretKey}
                 onChange={(e) => setAlpacaSecretKey(e.target.value)}
-                placeholder="Paste Alpaca secret"
-                aria-label="Alpaca secret"
+                placeholder="Paste Alpaca Secret"
+                aria-label="Alpaca Secret"
               />
               <button
                 type="button"
@@ -221,6 +268,50 @@ export default function ApiKeysPage() {
                 type="button"
                 className={styles.secondary}
                 onClick={testAlpacaKeys}
+                disabled={loading}
+              >
+                Test
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className={styles.card} aria-label="Settrade credentials">
+          <p className={styles.cardTitle}>Settrade (Thai market)</p>
+          <div className={styles.field}>
+            <div className={styles.label}>App Id</div>
+            <input
+              className={styles.input}
+              type="password"
+              value={settradeAppId}
+              onChange={(e) => setSettradeAppId(e.target.value)}
+              placeholder="Paste Settrade app ID"
+              aria-label="Settrade app ID"
+            />
+          </div>
+          <div className={styles.field}>
+            <div className={styles.label}>App Secret</div>
+            <div className={styles.rowWrap}>
+              <input
+                className={styles.input}
+                type="password"
+                value={settradeAppSecret}
+                onChange={(e) => setSettradeAppSecret(e.target.value)}
+                placeholder="Paste Settrade app Secret"
+                aria-label="Settrade app Secret"
+              />
+              <button
+                type="button"
+                className={styles.primary}
+                onClick={saveSettradeKeys}
+                disabled={loading || !settradeAppId.trim() || !settradeAppSecret.trim()}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className={styles.secondary}
+                onClick={testSettradeKeys}
                 disabled={loading}
               >
                 Test

@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, status, Request, Response, Depends
 from pydantic import BaseModel, EmailStr
 
+from app.api.dependencies import get_current_user
 from app.core import supabase_auth
+from app.core.db import get_database
 
 router = APIRouter()
 
@@ -18,6 +20,11 @@ class SignInPayload(BaseModel):
 
 class EmailPayload(BaseModel):
     email: EmailStr
+
+
+class ProfileIn(BaseModel):
+    full_name: str | None = None
+    avatar_url: str | None = None
 
 
 @router.post('/signup')
@@ -99,21 +106,91 @@ async def password_reset(payload: EmailPayload):
     return res
 
 
-def get_current_user(request: Request):
-    # prefer cookie
-    token = None
-    if 'session' in request.cookies:
-        token = request.cookies.get('session')
-    else:
-        auth = request.headers.get('Authorization')
-        if auth and auth.lower().startswith('bearer '):
-            token = auth.split(' ', 1)[1]
-    payload = supabase_auth.verify_jwt(token) if token else None
-    if not payload:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Unauthorized')
-    return payload
+def _profile_defaults(user: dict) -> dict:
+    email = (user.get('email') or '').strip()
+    full_name = user.get('full_name') or user.get('user_metadata', {}).get('full_name')
+    if not full_name and email:
+        full_name = email.split('@', 1)[0]
+    avatar_url = user.get('avatar_url') or user.get('user_metadata', {}).get('avatar_url')
+    return {
+        'id': user.get('sub'),
+        'full_name': full_name,
+        'avatar_url': avatar_url,
+        'email': email,
+        'role': user.get('role') or 'authenticated_user',
+    }
+
+
+@router.get('/profile')
+async def get_profile(user=Depends(get_current_user)):
+    owner = user.get('sub')
+    defaults = _profile_defaults(user)
+    try:
+        db = get_database()
+        if owner:
+            row = await db.fetch_one(
+                query="SELECT id, full_name, avatar_url, created_at FROM profiles WHERE id = :id",
+                values={'id': owner},
+            )
+        else:
+            row = None
+    except Exception as e:
+        # Best effort: if the DB table is unavailable, fall back to auth metadata defaults.
+        row = None
+
+    if not row:
+        return defaults
+
+    return {
+        'id': str(row['id']),
+        'full_name': row['full_name'] or defaults['full_name'],
+        'avatar_url': row['avatar_url'] or defaults['avatar_url'],
+        'email': defaults['email'],
+        'role': user.get('role') or defaults['role'],
+        'created_at': str(row['created_at']) if row['created_at'] else None,
+    }
+
+
+@router.put('/profile')
+async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
+    owner = user.get('sub')
+    full_name = (payload.full_name or '').strip() or None
+    avatar_url = (payload.avatar_url or '').strip() or None
+
+    try:
+        db = get_database()
+        owner = user.get('sub')
+        if owner:
+            await db.execute(
+                query=(
+                    "INSERT INTO profiles (id, full_name, avatar_url) "
+                    "VALUES (:id, :full_name, :avatar_url) "
+                    "ON CONFLICT (id) DO UPDATE SET "
+                    "full_name = EXCLUDED.full_name, "
+                    "avatar_url = EXCLUDED.avatar_url"
+                ),
+                values={'id': owner, 'full_name': full_name, 'avatar_url': avatar_url},
+            )
+            row = await db.fetch_one(
+                query="SELECT id, full_name, avatar_url, created_at FROM profiles WHERE id = :id",
+                values={'id': owner},
+            )
+        else:
+            row = None
+    except Exception:
+        row = None
+
+    defaults = _profile_defaults(user)
+    return {
+        'id': str(row['id']) if row else owner,
+        'full_name': row['full_name'] if row else full_name or defaults['full_name'],
+        'avatar_url': row['avatar_url'] if row else avatar_url or defaults['avatar_url'],
+        'email': defaults['email'],
+        'role': user.get('role') or defaults['role'],
+        'created_at': str(row['created_at']) if row and row['created_at'] else None,
+    }
 
 
 @router.get('/me')
 async def me(user=Depends(get_current_user)):
-    return {'user': user}
+    return {'user': user, 'profile': _profile_defaults(user)}

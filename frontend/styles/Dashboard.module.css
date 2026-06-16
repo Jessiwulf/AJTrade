@@ -69,9 +69,73 @@
   border: 1px solid var(--aj-border);
 }
 
+.watchItem button,
+.watchItem {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.watchItem {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.watchItem:hover {
+  background: var(--aj-bg);
+}
+
+.watchItemActive {
+  border-color: var(--aj-accent-border);
+  background: var(--aj-accent-soft);
+}
+
+.watchItemLeft {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 .symbol {
   font-weight: 800;
   color: var(--aj-indigo);
+}
+
+.watchMeta {
+  font-size: 13px;
+  color: var(--aj-text-muted);
+  line-height: 1.35;
+}
+
+.watchBadge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--aj-accent-soft);
+  border: 1px solid var(--aj-accent-border);
+  color: var(--aj-indigo);
+  font-weight: 800;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.watchItemRight {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+
+.watchPrice {
+  font-weight: 900;
+  color: var(--aj-text);
+}
+
+.watchSummary {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--aj-text-muted);
 }
 
 .changePos {
@@ -92,6 +156,13 @@
   margin-bottom: 10px;
 }
 
+.chartMetaRow {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .assetName {
   margin: 0;
   font-size: 18px;
@@ -106,6 +177,56 @@
   padding: 8px 10px;
   background: var(--aj-bg);
   color: var(--aj-text);
+}
+
+.periodRow {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.periodButton {
+  border: 1px solid var(--aj-border);
+  background: var(--aj-bg);
+  padding: 8px 12px;
+  border-radius: 999px;
+  color: var(--aj-text-muted);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.periodButton:hover {
+  background: var(--aj-surface);
+}
+
+.periodButtonActive {
+  color: var(--aj-indigo);
+  background: var(--aj-accent-soft);
+  border-color: var(--aj-accent-border);
+}
+
+.chartLoading {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  color: var(--aj-text-muted);
+  border: 1px dashed var(--aj-border);
+  border-radius: 14px;
+  background: var(--aj-surface);
+}
+
+.miniButton {
+  border: 1px solid var(--aj-border);
+  border-radius: 999px;
+  padding: 8px 10px;
+  background: var(--aj-bg);
+  color: var(--aj-text);
+  cursor: pointer;
+}
+
+.miniButton:hover {
+  background: var(--aj-surface);
 }
 
 .tradeGrid {
