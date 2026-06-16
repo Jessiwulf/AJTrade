@@ -6,3 +6,15 @@ services:
       - .env
     ports:
       - "8000:8000"
+
+  # Optional local LLM runtime (enable with: `docker compose --profile llm up --build`)
+  ollama:
+    profiles: ["llm"]
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  ollama:

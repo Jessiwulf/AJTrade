@@ -152,6 +152,21 @@ async def ping_key(payload: PingIn, user=Depends(get_current_user)):
             "buying_power": data.get('buying_power'),
         }
 
+    if service == 'settrade':
+        # Settrade uses an App Id / App Secret pair. We only validate that both are present in the Vault.
+        app_id = await _get_service_key('settrade_app_id')
+        app_secret = await _get_service_key('settrade_app_secret')
+
+        if not app_id or not app_secret:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Settrade App Id / App Secret not found in vault')
+
+        return {
+            "status": "ok",
+            "service": "settrade",
+            "has_app_id": True,
+            "has_app_secret": True,
+        }
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail='Ping not supported for this service (supported: newsapi, alpaca)',

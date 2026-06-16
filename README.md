@@ -21,6 +21,12 @@ copy .env.example .env
 docker compose up --build
 ```
 
+Optional: run the local LLM runtime (Ollama) for the Dual-LLM explainer endpoints:
+
+```bash
+docker compose --profile llm up --build
+```
+
 Next steps: confirm and pick which core feature to implement first (Auth, Vault, News+ML, Bot, Dashboard, Notifications).
 
 Environment variables (backend):
@@ -32,3 +38,10 @@ Environment variables (backend):
 - `AJTRADE_DEV_DISABLE_SECURE_COOKIE` - set to `1` to allow non-secure cookies in local dev
 - `AJTRADE_DEV_RETURN_TOKENS` - set to `1` to return `access_token` in login response for dev (frontend stores it in localStorage)
 - `AJTRADE_DEV_RETURN_PLAINTEXT` - set to `1` to allow `GET /api/vault/keys/{id}/raw` to return plaintext (dev only)
+
+AI / ML (v2):
+
+- `AJTRADE_FINBERT_MODEL` - Hugging Face model name for FinBERT sentiment (default: `ProsusAI/finbert`)
+- `AJTRADE_FINBERT_DEVICE` - `auto` (default), `cpu`, or `cuda`
+- `AJTRADE_FINBERT_MAX_LENGTH` - tokenizer max length (default: 256)
+- `AJTRADE_OLLAMA_URL` - base URL for Ollama (default: `http://ollama:11434`)

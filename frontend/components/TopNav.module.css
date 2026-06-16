@@ -58,6 +58,37 @@
   gap: 12px;
 }
 
+.profileButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-surface);
+  overflow: hidden;
+  box-shadow: var(--aj-shadow-sm);
+}
+
+.profileButton:hover {
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.profileAvatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profileInitials {
+  color: var(--aj-indigo);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
 .login {
   color: var(--aj-text-muted);
   font-size: 14px;

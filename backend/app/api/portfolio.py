@@ -34,11 +34,10 @@ async def _validate_symbol(symbol: str) -> None:
     except Exception:
         ok = False
 
+    # Best effort only: if market data is unavailable, still allow the position to be saved.
+    # This keeps portfolio CRUD usable when the upstream data source is intermittent.
     if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ticker not found (no market data returned)",
-        )
+        return
 
 
 def _maybe_schema_hint(error: Exception, table: str) -> Optional[str]:

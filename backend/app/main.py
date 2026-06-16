@@ -63,6 +63,13 @@ except Exception as e:
     logger.warning("ML router not loaded: %s", e)
 
 try:
+    from app.api import ml_v2 as ml_v2_router
+
+    app.include_router(ml_v2_router.router, prefix='/api/ml/v2')
+except Exception as e:
+    logger.warning("ML v2 router not loaded: %s", e)
+
+try:
     from app.api import watchlist as watchlist_router
 
     app.include_router(watchlist_router.router, prefix='/api/watchlist')
@@ -75,6 +82,28 @@ try:
     app.include_router(portfolio_router.router, prefix='/api/portfolio')
 except Exception as e:
     logger.warning("Portfolio router not loaded: %s", e)
+
+try:
+    from app.api import market as market_router
+
+    app.include_router(market_router.router, prefix='/api/market')
+except Exception as e:
+    logger.warning("Market router not loaded: %s", e)
+
+try:
+    from app.api import analytics as analytics_router
+
+    app.include_router(analytics_router.router, prefix='/api/analytics')
+except Exception as e:
+    logger.warning("Analytics router not loaded: %s", e)
+
+
+try:
+    from app.api import analytics_seeder as seeder_router
+
+    app.include_router(seeder_router.router, prefix='/api/analytics')
+except Exception as e:
+    logger.warning("Analytics seeder not loaded: %s", e)
 
 
 @app.on_event('startup')

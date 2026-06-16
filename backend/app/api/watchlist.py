@@ -35,11 +35,10 @@ async def _validate_symbol(symbol: str) -> None:
     except Exception:
         ok = False
 
+    # Best effort only: if market data is unavailable, still allow the symbol to be saved.
+    # This keeps watchlist CRUD usable when yfinance or the upstream data source is down.
     if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ticker not found (no market data returned)",
-        )
+        return
 
 
 def _maybe_schema_hint(error: Exception, table: str) -> Optional[str]:
