@@ -16,11 +16,15 @@ function formatDate(value) {
 
 export default function PortfolioPage() {
   const [portfolio, setPortfolio] = useState(null)
+  const [paperAccount, setPaperAccount] = useState(null)
   const [needsInit, setNeedsInit] = useState(false)
   const [cash, setCash] = useState('')
   const [symbol, setSymbol] = useState('')
   const [quantity, setQuantity] = useState('')
   const [avgPrice, setAvgPrice] = useState('')
+  const [orderSide, setOrderSide] = useState('BUY')
+  const [orderQuantity, setOrderQuantity] = useState('')
+  const [orderNotional, setOrderNotional] = useState('')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState(null)
 
@@ -49,6 +53,16 @@ export default function PortfolioPage() {
       }
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadPaperAccount() {
+    try {
+      const data = await apiFetch('/api/portfolio/paper-account')
+      setPaperAccount(data)
+    } catch (e) {
+      setPaperAccount(null)
+      setMessage(`Error: ${e.message}`)
     }
   }
 
@@ -133,13 +147,86 @@ export default function PortfolioPage() {
     }
   }
 
+  async function syncPaperPortfolio() {
+    setLoading(true)
+    setMessage(null)
+    try {
+      await apiFetch('/api/portfolio/sync-paper', { method: 'POST' })
+      await Promise.all([loadPortfolio(), loadPaperAccount()])
+      setMessage('Paper portfolio synced from Alpaca')
+    } catch (e) {
+      setMessage(`Error: ${e.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function submitPaperOrder() {
+    const s = symbol.trim()
+    const q = orderQuantity.trim()
+    const n = orderNotional.trim()
+    if (!s || (!q && !n)) return
+
+    setLoading(true)
+    setMessage(null)
+    try {
+      await apiFetch('/api/portfolio/paper-orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: s,
+          side: orderSide,
+          quantity: q || null,
+          notional: n || null,
+        }),
+      })
+      setOrderQuantity('')
+      setOrderNotional('')
+      await Promise.all([loadPortfolio(), loadPaperAccount()])
+      setMessage(`${orderSide} paper order submitted`)
+    } catch (e) {
+      setMessage(`Error: ${e.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   useEffect(() => {
     loadPortfolio()
+    loadPaperAccount()
   }, [])
 
   return (
-    <AppShell title="Portfolio" subtitle="Simulated portfolio (cash + holdings)">
+    <AppShell title="Portfolio" subtitle="Live paper trading with Alpaca + synced local portfolio">
       <div className={styles.page}>
+        <section className={styles.card} aria-label="Paper trading account">
+          <p className={styles.cardTitle}>Paper Trading</p>
+          <div className={styles.field}>
+            <div className={styles.rowWrap}>
+              <button type="button" className={styles.primary} onClick={syncPaperPortfolio} disabled={loading}>
+                Sync from Alpaca
+              </button>
+              <button type="button" className={styles.secondary} onClick={loadPaperAccount} disabled={loading}>
+                Refresh paper account
+              </button>
+            </div>
+            {paperAccount ? (
+              <div className={styles.list}>
+                <div className={styles.item}>
+                  <div className={styles.itemLeft}>
+                    <div className={styles.itemTitle}>Account Status</div>
+                    <div className={styles.itemMeta}>
+                      {paperAccount.status || 'Unknown'} • Buying power {paperAccount.buying_power || '0'} • Cash {paperAccount.cash || '0'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className={styles.msg}>Paper account unavailable. Save and test Alpaca keys first.</p>
+            )}
+          </div>
+        </section>
+
         {needsInit ? (
           <section className={styles.card} aria-label="Initialize portfolio">
             <p className={styles.cardTitle}>Initialize</p>
@@ -179,6 +266,58 @@ export default function PortfolioPage() {
           </section>
         ) : (
           <>
+            <section className={styles.card} aria-label="Submit paper order">
+              <p className={styles.cardTitle}>Submit Paper Order</p>
+              <div className={styles.field}>
+                <div className={styles.label}>Live paper order</div>
+                <div className={styles.rowWrap}>
+                  <input
+                    className={styles.input}
+                    value={symbol}
+                    onChange={(e) => setSymbol(e.target.value)}
+                    placeholder="AAPL"
+                    autoCapitalize="characters"
+                    aria-label="Order symbol"
+                  />
+                  <select
+                    className={styles.select}
+                    value={orderSide}
+                    onChange={(e) => setOrderSide(e.target.value)}
+                    aria-label="Order side"
+                  >
+                    <option value="BUY">BUY</option>
+                    <option value="SELL">SELL</option>
+                  </select>
+                  <input
+                    className={styles.input}
+                    value={orderQuantity}
+                    onChange={(e) => setOrderQuantity(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="Quantity"
+                    aria-label="Order quantity"
+                  />
+                  <input
+                    className={styles.input}
+                    value={orderNotional}
+                    onChange={(e) => setOrderNotional(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="Notional (optional for BUY)"
+                    aria-label="Order notional"
+                  />
+                  <button
+                    type="button"
+                    className={styles.primary}
+                    onClick={submitPaperOrder}
+                    disabled={loading || !symbol.trim() || (!orderQuantity.trim() && !orderNotional.trim())}
+                  >
+                    Submit paper order
+                  </button>
+                </div>
+                <p className={styles.msg}>Orders are sent to your Alpaca paper account, then synced back into the app portfolio and watchlist.</p>
+              </div>
+              {message ? <p className={messageClass}>{message}</p> : null}
+            </section>
+
             <section className={styles.card} aria-label="Cash balance">
               <p className={styles.cardTitle}>Cash</p>
               <div className={styles.field}>
@@ -254,7 +393,7 @@ export default function PortfolioPage() {
                   </button>
                 </div>
                 <p className={styles.msg}>
-                  Saving the same symbol overwrites that position.
+                  Saving the same symbol overwrites that local position. Use paper orders above for live Alpaca paper trading.
                 </p>
               </div>
 

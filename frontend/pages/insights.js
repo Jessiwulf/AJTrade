@@ -1,45 +1,57 @@
+import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import AppShell from '../components/AppShell'
+import { apiFetch } from '../lib/api'
 import styles from '../styles/Insights.module.css'
 
-const assets = [
-  {
-    symbol: 'MSFT',
-    recommendation: 'Strong Buy',
-    confidence: 92,
-    rationale: [
-      'Positive earnings sentiment and strong fundamentals',
-      'Momentum aligns with trend-following signals',
-      'News flow suggests improving risk-adjusted outlook',
-    ],
-  },
-  {
-    symbol: 'TSLA',
-    recommendation: 'Strong Buy',
-    confidence: 92,
-    rationale: [
-      'Strong sentiment pickup across recent coverage',
-      'High volatility balanced by tight risk controls',
-      'Technical structure supports continuation bias',
-    ],
-  },
-]
-
 export default function Insights() {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadInsights() {
+      setLoading(true)
+      setError('')
+      try {
+        const data = await apiFetch('/api/ml/v2/watchlist/insights')
+        if (!cancelled) setItems(Array.isArray(data) ? data : [])
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Unable to load insights.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    loadInsights()
+    return () => { cancelled = true }
+  }, [])
+
   return (
     <AppShell
       title="AI Insights"
       subtitle="Sentiment & recommendations"
     >
       <div className={styles.list}>
-        {assets.map((a) => (
+        {loading ? <section className={styles.emptyState}>Loading live watchlist insights...</section> : null}
+        {!loading && error ? <section className={styles.emptyState}>Error: {error}</section> : null}
+        {!loading && !error && !items.length ? (
+          <section className={styles.emptyState}>
+            No watchlist insights available yet. Add assets on <Link href="/watchlist">Watchlist</Link> and optionally save a NewsAPI key on <Link href="/api-keys">API Management</Link>.
+          </section>
+        ) : null}
+        {items.map((a) => (
           <section key={a.symbol} className={styles.card} aria-label={`${a.symbol} insight`}>
             <div>
               <h2 className={styles.asset}>{a.symbol}</h2>
+              <p className={styles.trendSummary}>{a.trend_summary}</p>
 
               <div className={styles.meta}>
                 <div>
                   <p className={styles.label}>AI Recommendation</p>
-                  <p className={`${styles.reco} ${styles.recoStrongBuy}`}>{a.recommendation}</p>
+                  <p className={`${styles.reco} ${a.signal === 'BUY' ? styles.recoStrongBuy : a.signal === 'SELL' ? styles.recoSell : styles.recoHold}`}>{a.recommendation}</p>
                 </div>
 
                 <div>
@@ -58,9 +70,13 @@ export default function Insights() {
                 <p className={styles.label}>Confidence Score</p>
                 <p className={styles.confidence}>{a.confidence}%</p>
               </div>
-              <button type="button" className={styles.primary}>
+              <div className={styles.sideStats}>
+                <span>Signal: {a.signal}</span>
+                <span>Up Probability: {(Number(a.probability_up || 0) * 100).toFixed(0)}%</span>
+              </div>
+              <Link href="/automated" className={styles.primary}>
                 AUTOMATE
-              </button>
+              </Link>
             </aside>
           </section>
         ))}

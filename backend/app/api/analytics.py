@@ -442,13 +442,19 @@ async def get_asset_detail(symbol: str, range_: str = '1mo'):
         # Get sentiment
         sentiment = await get_asset_sentiment(db, symbol)
 
-        # Calculate price change (simplified: compare with 1-day ago if available)
+        # Calculate price change from the returned chart payload.
         price_change = 0
         price_change_pct = 0
-        if hist_data and len(hist_data) > 1:
-            old_price = hist_data[0].get('close', price)
-            price_change = float(price) - float(old_price)
-            price_change_pct = (price_change / float(old_price) * 100) if float(old_price) > 0 else 0
+        points = []
+        if isinstance(hist_data, dict):
+            points = hist_data.get('points') or []
+
+        closes = [point.get('close') for point in points if point.get('close') is not None]
+        if len(closes) > 1:
+            old_price = float(closes[0])
+            latest_price = float(closes[-1])
+            price_change = latest_price - old_price
+            price_change_pct = (price_change / old_price * 100) if old_price > 0 else 0
 
         return AssetDetail(
             symbol=symbol,

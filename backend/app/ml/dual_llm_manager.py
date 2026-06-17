@@ -25,25 +25,27 @@ class DualLLMManager:
     or execute orders.
     """
 
-    OPEN_SOURCE_MODEL = "llama3-fingpt"
-    CUSTOM_MODEL = "ajtrade-custom-v1"
+    model_open_source = "llama3:8b"
+    model_custom = "ajtrade-custom-v1"
 
     def __init__(
         self,
         *,
-        ollama_base_url: Optional[str] = None,
-        timeout_s: float = 20.0,
+        ollama_host: Optional[str] = None,
+        timeout_s: float = 90.0,
     ) -> None:
-        self.ollama_base_url = (ollama_base_url or os.environ.get("AJTRADE_OLLAMA_URL") or "http://ollama:11434").rstrip(
-            "/"
-        )
-        self.timeout_s = float(timeout_s)
+        base_host = (ollama_host or os.environ.get("OLLAMA_HOST") or "http://ollama:11434").rstrip("/")
+        self.ollama_generate_url = f"{base_host}/api/generate"
+        timeout_override = os.environ.get("OLLAMA_TIMEOUT_S")
+        self.timeout_s = float(timeout_override or timeout_s)
+        self.last_model_used: Optional[str] = None
+        self.last_used_fallback: bool = False
 
     def _select_model(self, user_preference: str) -> str:
         pref = (user_preference or "").strip().lower()
         if pref == "custom":
-            return self.CUSTOM_MODEL
-        return self.OPEN_SOURCE_MODEL
+            return self.model_custom
+        return self.model_open_source
 
     @staticmethod
     def _build_system_prompt() -> str:
@@ -57,8 +59,7 @@ class DualLLMManager:
             "5) Output must be concise and human-readable (short paragraphs or bullets)."
         )
 
-    async def _ollama_generate(self, *, model: str, system: str, prompt: str) -> Dict[str, Any]:
-        url = f"{self.ollama_base_url}/api/generate"
+    async def _ollama_generate(self, *, model: str, system: str, prompt: str) -> str:
         payload = {
             "model": model,
             "system": system,
@@ -68,16 +69,19 @@ class DualLLMManager:
         timeout = httpx.Timeout(self.timeout_s)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(self.ollama_generate_url, json=payload)
             resp.raise_for_status()
             data = resp.json()
 
         if not isinstance(data, dict):
             raise DualLLMManagerError("ollama_invalid_response")
 
-        return data
+        text = str(data.get("response") or "").strip()
+        if not text:
+            raise DualLLMManagerError("ollama_empty_response")
+        return text
 
-    async def generate_explanation(self, user_preference: str, shap_context: Dict[str, Any], prompt: str) -> Dict[str, Any]:
+    async def generate_explanation(self, user_preference: str, shap_context: Dict[str, Any], predicted_signal: str) -> str:
         """Generate a human-readable explanation using the selected LLM with strict fallback.
 
         Routing:
@@ -101,27 +105,28 @@ class DualLLMManager:
         user_prompt = (
             "SHAP_CONTEXT_JSON:\n"
             f"{shap_json}\n\n"
-            "USER_REQUEST:\n"
-            f"{prompt}\n\n"
+            "REQUEST_OR_SIGNAL:\n"
+            f"{predicted_signal}\n\n"
             "Respond using ONLY SHAP_CONTEXT_JSON."
         )
 
-        used_fallback = False
+        self.last_used_fallback = False
+        self.last_model_used = None
 
         try:
-            data = await self._ollama_generate(model=target, system=system, prompt=user_prompt)
-            text = (data.get("response") or "").strip()
-            return {"model_used": target, "used_fallback": used_fallback, "explanation": text}
+            text = await self._ollama_generate(model=target, system=system, prompt=user_prompt)
+            self.last_model_used = target
+            return text
         except Exception as e:
-            if target != self.CUSTOM_MODEL:
+            if target != self.model_custom:
                 raise DualLLMManagerError(f"llm_generate_failed: {e}") from e
 
             # Strict fallback: custom failed -> open-source
-            used_fallback = True
+            self.last_used_fallback = True
             logger.warning("CUSTOM_MODEL failed; falling back to OPEN_SOURCE_MODEL", exc_info=True)
             try:
-                data = await self._ollama_generate(model=self.OPEN_SOURCE_MODEL, system=system, prompt=user_prompt)
-                text = (data.get("response") or "").strip()
-                return {"model_used": self.OPEN_SOURCE_MODEL, "used_fallback": used_fallback, "explanation": text}
+                text = await self._ollama_generate(model=self.model_open_source, system=system, prompt=user_prompt)
+                self.last_model_used = self.model_open_source
+                return text
             except Exception as e2:
                 raise DualLLMManagerError(f"llm_fallback_failed: {e2}") from e2

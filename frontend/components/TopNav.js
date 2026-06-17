@@ -5,14 +5,6 @@ import { apiFetch, setAccessToken } from '../lib/api'
 import { loadStoredProfile } from '../lib/userProfile'
 import styles from './TopNav.module.css'
 
-function DisabledLink({ children }) {
-  return (
-    <span className={`${styles.link} ${styles.disabled}`} aria-disabled="true">
-      {children}
-    </span>
-  )
-}
-
 export default function TopNav() {
   const [isAuthed, setIsAuthed] = useState(false)
   const [profile, setProfile] = useState(null)
@@ -64,7 +56,9 @@ export default function TopNav() {
           <Link href="/dashboard" className={styles.link}>
             Dashboard
           </Link>
-          <DisabledLink>Markets</DisabledLink>
+          <Link href="/markets" className={styles.link}>
+            Markets
+          </Link>
           <Link href="/insights" className={styles.link}>
             Insights
           </Link>

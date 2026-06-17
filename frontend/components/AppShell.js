@@ -6,6 +6,125 @@ import { apiFetch, setAccessToken } from '../lib/api'
 import { loadStoredProfile } from '../lib/userProfile'
 import styles from './AppShell.module.css'
 
+// --- Inline icon primitives (Heroicons-style stroke icons) ---
+function NavIcon({ size = 18, children }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ flexShrink: 0 }}
+    >
+      {children}
+    </svg>
+  )
+}
+
+const NAV_ITEMS = [
+  {
+    href: '/dashboard',
+    label: 'Dashboard',
+    icon: (
+      <NavIcon>
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/analytics',
+    label: 'Analytics',
+    icon: (
+      <NavIcon>
+        <polyline points="2 17 6 9 10 13 14 4 18 8" />
+        <line x1="2" y1="17" x2="22" y2="17" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/markets',
+    label: 'Markets',
+    icon: (
+      <NavIcon>
+        <rect x="3" y="14" width="4" height="7" />
+        <rect x="10" y="8" width="4" height="13" />
+        <rect x="17" y="4" width="4" height="17" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/insights',
+    label: 'Insights',
+    icon: (
+      <NavIcon>
+        <circle cx="12" cy="9" r="4" />
+        <path d="M9 14.5v2a1 1 0 001 1h4a1 1 0 001-1v-2" />
+        <line x1="10" y1="17.5" x2="14" y2="17.5" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/automated',
+    label: 'Automated',
+    icon: (
+      <NavIcon>
+        <rect x="5" y="9" width="14" height="11" rx="2" />
+        <path d="M8 9V7a4 4 0 018 0v2" />
+        <circle cx="12" cy="14" r="1" fill="currentColor" stroke="none" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/watchlist',
+    label: 'Watchlist',
+    icon: (
+      <NavIcon>
+        <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z" />
+        <circle cx="12" cy="12" r="3" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/portfolio',
+    label: 'Portfolio',
+    icon: (
+      <NavIcon>
+        <rect x="2" y="7" width="20" height="14" rx="2" />
+        <path d="M7 7V5a2 2 0 012-2h6a2 2 0 012 2v2" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/api-keys',
+    label: 'API Management',
+    icon: (
+      <NavIcon>
+        <circle cx="8" cy="12" r="4" />
+        <path d="M14 10h8M18 8v4" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/profile',
+    label: 'Profile & Settings',
+    matchPaths: ['/profile', '/settings'],
+    icon: (
+      <NavIcon>
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4 20a8 8 0 0116 0" />
+      </NavIcon>
+    ),
+  },
+]
+
 const SessionContext = createContext({
   isAuthed: true,
   isGuest: false,
@@ -13,12 +132,23 @@ const SessionContext = createContext({
   openAuthModal: () => {},
 })
 
-const TEMPORARILY_DISABLE_GUEST_MODE = true
+function parseBooleanEnv(value, fallback) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return fallback
+  return ['1', 'true', 'yes', 'on'].includes(normalized)
+}
+
+// Guest lock behavior is toggleable via env:
+// - true  => keep guest lock enabled
+// - false => temporarily disable guest lock for testing
+const GUEST_LOCK_ENABLED = parseBooleanEnv(process.env.NEXT_PUBLIC_GUEST_LOCK_ENABLED, true)
+const TEMPORARILY_DISABLE_GUEST_MODE = !GUEST_LOCK_ENABLED
 
 const LOCKED_ROUTES = new Set([
   '/analytics',
   '/automated',
   '/insights',
+  '/markets',
   '/portfolio',
   '/profile',
   '/settings',
@@ -30,14 +160,6 @@ export function useSession() {
   return useContext(SessionContext)
 }
 
-function DisabledNavItem({ children }) {
-  return (
-    <span className={`${styles.navItem} ${styles.disabled}`} aria-disabled="true">
-      {children}
-    </span>
-  )
-}
-
 export default function AppShell({ title, subtitle, children }) {
   const router = useRouter()
   const path = router?.pathname || ''
@@ -46,6 +168,7 @@ export default function AppShell({ title, subtitle, children }) {
   const [profile, setProfile] = useState(null)
   const [authModalOpen, setAuthModalOpen] = useState(false)
   const [authModalSource, setAuthModalSource] = useState('locked feature')
+  const [isNavOpen, setIsNavOpen] = useState(true)
 
   function getInitials(value) {
     const text = String(value || '').trim()
@@ -113,67 +236,62 @@ export default function AppShell({ title, subtitle, children }) {
     refreshSession()
   }, [])
 
-  const isActive = (href) => path === href
+  const isActive = (item) => {
+    if (item.matchPaths) return item.matchPaths.includes(path)
+    return item.href ? path === item.href : false
+  }
 
   return (
     <div className={styles.shell}>
-      <aside className={styles.sidebar}>
-        <Link href="/" className={styles.brand} aria-label="AJTrade home">
-          <AJLogo size={22} />
-          <span>AJTrade</span>
-        </Link>
+      <aside className={`${styles.sidebar} ${!isNavOpen ? styles.sidebarCollapsed : ''}`}>
+        <div className={styles.navTop}>
+          <Link href="/" className={styles.brand} aria-label="AJTrade home">
+            <AJLogo size={22} />
+            {isNavOpen && <span>AJTrade</span>}
+          </Link>
+        </div>
 
         <nav className={styles.nav} aria-label="Sidebar">
-          <Link
-            href="/dashboard"
-            className={`${styles.navItem} ${isActive('/dashboard') ? styles.active : ''}`}
-          >
-            Dashboard
-          </Link>
-          <Link
-            href="/analytics"
-            className={`${styles.navItem} ${isActive('/analytics') ? styles.active : ''}`}
-          >
-            Analytics
-          </Link>
-          <DisabledNavItem>Markets</DisabledNavItem>
-          <Link
-            href="/insights"
-            className={`${styles.navItem} ${isActive('/insights') ? styles.active : ''}`}
-          >
-            Insights
-          </Link>
-          <Link
-            href="/automated"
-            className={`${styles.navItem} ${isActive('/automated') ? styles.active : ''}`}
-          >
-            Automated
-          </Link>
-          <Link
-            href="/watchlist"
-            className={`${styles.navItem} ${isActive('/watchlist') ? styles.active : ''}`}
-          >
-            Watchlist
-          </Link>
-          <Link
-            href="/portfolio"
-            className={`${styles.navItem} ${isActive('/portfolio') ? styles.active : ''}`}
-          >
-            Portfolio
-          </Link>
-          <Link
-            href="/api-keys"
-            className={`${styles.navItem} ${isActive('/api-keys') ? styles.active : ''}`}
-          >
-            API Management
-          </Link>
-          <Link
-            href="/profile"
-            className={`${styles.navItem} ${(isActive('/profile') || isActive('/settings')) ? styles.active : ''}`}
-          >
-            Profile / Settings
-          </Link>
+          {NAV_ITEMS.map((item) => {
+            const active = isActive(item)
+
+            if (item.disabled) {
+              return (
+                <span
+                  key={item.label}
+                  className={`${styles.navItem} ${styles.disabled}`}
+                  aria-disabled="true"
+                  title={item.label}
+                >
+                  {item.icon}
+                  {isNavOpen && <span className={styles.navLabel}>{item.label}</span>}
+                </span>
+              )
+            }
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`${styles.navItem} ${active ? styles.active : ''}`}
+                title={item.label}
+              >
+                {item.icon}
+                {isNavOpen && <span className={styles.navLabel}>{item.label}</span>}
+              </Link>
+            )
+          })}
         </nav>
+
+        <button
+          type="button"
+          className={styles.navToggle}
+          onClick={() => setIsNavOpen((p) => !p)}
+          aria-label={isNavOpen ? 'Collapse navigation' : 'Expand navigation'}
+          title={isNavOpen ? 'Collapse navigation' : 'Expand navigation'}
+        >
+          {isNavOpen ? '\u2039' : '\u203a'}
+        </button>
       </aside>
 
       <SessionContext.Provider value={session}>

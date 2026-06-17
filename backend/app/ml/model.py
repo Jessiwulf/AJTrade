@@ -4,7 +4,6 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import joblib
-import lightgbm as lgb
 from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy import sparse
 
@@ -131,6 +130,11 @@ def prepare_article_training(
 
 
 def train_and_save(symbol: str, X: sparse.csr_matrix, y: np.ndarray, vectorizer: TfidfVectorizer, feature_names: List[str]) -> str:
+    try:
+        import lightgbm as lgb
+    except Exception as e:
+        raise RuntimeError('lightgbm_not_installed') from e
+
     dtrain = lgb.Dataset(X, label=y, feature_name=feature_names)
     params = {
         'objective': 'binary',
