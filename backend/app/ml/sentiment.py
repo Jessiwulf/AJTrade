@@ -1,12 +1,38 @@
 import re
 from typing import List, Dict, Any
 
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 
 
+def _get_analyzer():
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+        return SentimentIntensityAnalyzer()
+    except Exception:
+        return None
+
+
+def _fallback_scores(text: str) -> Dict[str, float]:
+    lower = str(text or '').lower()
+    positive_terms = {'gain', 'gains', 'rise', 'rises', 'bullish', 'beat', 'beats', 'surge', 'up'}
+    negative_terms = {'drop', 'drops', 'fall', 'falls', 'bearish', 'miss', 'misses', 'slump', 'down'}
+    pos = sum(1 for term in positive_terms if term in lower)
+    neg = sum(1 for term in negative_terms if term in lower)
+    total = max(pos + neg, 1)
+    compound = (pos - neg) / total
+    return {
+        'pos': max(compound, 0.0),
+        'neg': abs(min(compound, 0.0)),
+        'neu': 1.0 if pos == 0 and neg == 0 else 0.0,
+        'compound': float(compound),
+    }
+
+
 def analyze_sentiment(text: str) -> Dict[str, float]:
-    analyzer = SentimentIntensityAnalyzer()
+    analyzer = _get_analyzer()
+    if analyzer is None:
+        return _fallback_scores(text)
     return analyzer.polarity_scores(text)
 
 
@@ -16,14 +42,13 @@ def sentiment_compound(text: str) -> float:
 
 def aggregate_article_sentiments(articles: List[Dict[str, Any]]) -> Dict[str, Any]:
     stopwords = set(ENGLISH_STOP_WORDS)
-    analyzer = SentimentIntensityAnalyzer()
     agg = {'count': 0, 'compound_sum': 0.0, 'pos': 0, 'neg': 0, 'neu': 0, 'keywords': {}}
     word_re = re.compile(r"\b[a-zA-Z]{3,}\b")
     for art in articles:
         txt = ' '.join(filter(None, [art.get('title', ''), art.get('description', ''), art.get('content', '')]))
         if not txt:
             continue
-        s = analyzer.polarity_scores(txt)
+        s = analyze_sentiment(txt)
         agg['count'] += 1
         agg['compound_sum'] += s['compound']
         if s['compound'] >= 0.05:

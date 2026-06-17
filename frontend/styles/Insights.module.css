@@ -49,6 +49,21 @@
   color: var(--aj-positive);
 }
 
+.recoSell {
+  color: var(--aj-negative);
+}
+
+.recoHold {
+  color: var(--aj-text);
+}
+
+.trendSummary {
+  margin: 8px 0 0;
+  color: var(--aj-text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .rationale {
   margin: 0;
   padding-left: 18px;
@@ -64,6 +79,21 @@
   padding: 14px;
   display: grid;
   gap: 12px;
+}
+
+.sideStats {
+  display: grid;
+  gap: 6px;
+  color: var(--aj-text-muted);
+  font-size: 13px;
+}
+
+.emptyState {
+  border: 1px dashed var(--aj-border);
+  background: var(--aj-surface);
+  color: var(--aj-text-muted);
+  border-radius: var(--aj-radius-md);
+  padding: 18px;
 }
 
 .confidence {

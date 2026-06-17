@@ -3,7 +3,6 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import get_current_user
 from app.core.db import get_database
@@ -22,23 +21,14 @@ async def _validate_symbol(symbol: str) -> None:
     if not symbol or not _SYMBOL_RE.match(symbol):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid ticker symbol")
 
-    # Validate against the available market data source (yfinance).
-    # Run in threadpool to avoid blocking the event loop.
-    def _fetch() -> bool:
-        import yfinance as yf
-
-        df = yf.Ticker(symbol).history(period="5d", interval="1d", auto_adjust=False)
-        return df is not None and not df.empty
-
     try:
-        ok = await run_in_threadpool(_fetch)
-    except Exception:
-        ok = False
+        from app.api.market import get_market_price
 
-    # Best effort only: if market data is unavailable, still allow the symbol to be saved.
-    # This keeps watchlist CRUD usable when yfinance or the upstream data source is down.
-    if not ok:
-        return
+        await get_market_price(symbol)
+    except HTTPException as exc:
+        if exc.status_code in {status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Ticker {symbol} is not available") from exc
+        raise
 
 
 def _maybe_schema_hint(error: Exception, table: str) -> Optional[str]:

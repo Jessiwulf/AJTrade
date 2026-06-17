@@ -1,25 +1,47 @@
 .shell {
   min-height: 100vh;
   background: var(--aj-bg);
-  display: grid;
-  grid-template-columns: 260px 1fr;
+  display: flex;
 }
 
 .sidebar {
   border-right: 1px solid var(--aj-border);
   background: var(--aj-bg);
   padding: 18px 14px;
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.25s ease-in-out, padding 0.25s ease-in-out;
+}
+
+.sidebarCollapsed {
+  width: 68px;
+  padding: 18px 10px;
+}
+
+.navTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 18px;
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: 999px;
   font-weight: 800;
   letter-spacing: -0.02em;
   color: var(--aj-indigo);
+  white-space: nowrap;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
 }
 
 .brand:hover {
@@ -28,18 +50,72 @@
 }
 
 .nav {
-  margin-top: 18px;
+  flex: 1;
+  margin-top: 0;
   display: grid;
-  gap: 6px;
+  gap: 4px;
+  align-content: start;
 }
 
 .navItem {
   display: flex;
   align-items: center;
-  padding: 10px 12px;
-  border-radius: 12px;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
   color: var(--aj-text-muted);
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background 0.15s, color 0.15s;
+}
+
+.navLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Collapsed: center the icons, hide label gap */
+.sidebarCollapsed .navItem {
+  justify-content: center;
+  padding: 9px;
+  gap: 0;
+}
+
+.sidebarCollapsed .brand {
+  justify-content: center;
+  padding: 8px;
+  flex: none;
+}
+
+/* Nav collapse toggle — sits at the bottom of sidebar */
+.navToggle {
+  margin-top: 12px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  border: 1px solid var(--aj-border);
+  border-radius: 8px;
+  background: var(--aj-surface);
+  color: var(--aj-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 900;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.navToggle:hover {
+  background: var(--aj-accent-soft);
+  color: var(--aj-indigo);
+  border-color: var(--aj-accent-border);
+}
+
+.sidebarCollapsed .navToggle {
+  align-self: center;
 }
 
 .navItem:hover {
@@ -59,6 +135,8 @@
 }
 
 .content {
+  flex: 1;
+  min-width: 0;
   position: relative;
   padding: 22px 22px 40px;
 }
@@ -240,15 +318,21 @@
 
 @media (max-width: 980px) {
   .shell {
-    grid-template-columns: 1fr;
+    flex-direction: column;
   }
 
   .sidebar {
+    width: 100% !important;
     border-right: 0;
     border-bottom: 1px solid var(--aj-border);
+    padding: 12px 14px;
   }
 
   .nav {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .navToggle {
+    display: none;
   }
 }

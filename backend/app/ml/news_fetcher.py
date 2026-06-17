@@ -1,13 +1,11 @@
-import os
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 
-from newsapi import NewsApiClient
+import httpx
 import yfinance as yf
 
 
 def fetch_news_for_symbol(api_key: str, symbol: str, from_dt: datetime = None, to_dt: datetime = None, page_size: int = 100) -> List[Dict[str, Any]]:
-    client = NewsApiClient(api_key=api_key)
     if to_dt is None:
         to_dt = datetime.utcnow()
     if from_dt is None:
@@ -15,8 +13,22 @@ def fetch_news_for_symbol(api_key: str, symbol: str, from_dt: datetime = None, t
     q = f"{symbol} OR {symbol} stock OR {symbol} company"
     articles = []
     try:
-        res = client.get_everything(q=q, from_param=from_dt.isoformat(), to=to_dt.isoformat(), language='en', page_size=page_size)
-        articles = res.get('articles', [])
+        response = httpx.get(
+            'https://newsapi.org/v2/everything',
+            params={
+                'q': q,
+                'from': from_dt.isoformat(),
+                'to': to_dt.isoformat(),
+                'language': 'en',
+                'pageSize': page_size,
+                'sortBy': 'publishedAt',
+                'apiKey': api_key,
+            },
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        res = response.json()
+        articles = res.get('articles', []) if isinstance(res, dict) else []
     except Exception:
         # best-effort: return empty list on failure
         articles = []

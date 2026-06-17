@@ -44,6 +44,14 @@ def _article_text(article: Dict[str, Any]) -> str:
     return " ".join(filter(None, [article.get("title", ""), article.get("description", ""), article.get("content", "")]))
 
 
+def _article_excerpt(article: Dict[str, Any]) -> str:
+    text = article.get('description') or article.get('content') or ''
+    text = str(text).strip()
+    if len(text) > 220:
+        return f"{text[:217].rstrip()}..."
+    return text
+
+
 def _parse_published_date(article: Dict[str, Any]) -> Optional[pd.Timestamp]:
     s = article.get("publishedAt")
     if not s:
@@ -73,6 +81,29 @@ async def _get_newsapi_key_for_owner(owner: str) -> Optional[str]:
     from app.core import crypto
 
     return crypto.decrypt_api_key(row["encrypted_blob"]).decode("utf-8")
+
+
+async def _get_watchlist_symbols(owner: str) -> List[str]:
+    db = get_database()
+    rows = await db.fetch_all(
+        query=(
+            "SELECT symbol FROM watchlists "
+            "WHERE owner = :owner "
+            "ORDER BY created_at DESC"
+        ),
+        values={"owner": owner},
+    )
+    symbols: List[str] = []
+    for row in rows or []:
+        symbol = None
+        try:
+            symbol = row['symbol']
+        except Exception:
+            if isinstance(row, dict):
+                symbol = row.get('symbol')
+        if symbol:
+            symbols.append(str(symbol).upper())
+    return symbols
 
 
 def _build_sentiment_series(df_ohlcv: pd.DataFrame, scored_articles: List[Dict[str, Any]]) -> pd.Series:
@@ -133,6 +164,236 @@ def _score_articles_finbert(analyzer: NewsSentimentAnalyzer, articles: List[Dict
     return scored
 
 
+def _sentiment_label(avg_score: float) -> str:
+    if avg_score >= 0.35:
+        return 'Strong Bullish'
+    if avg_score >= 0.1:
+        return 'Bullish'
+    if avg_score <= -0.35:
+        return 'Strong Bearish'
+    if avg_score <= -0.1:
+        return 'Bearish'
+    return 'Neutral'
+
+
+def _trend_outlook(price_change_pct: float, avg_sentiment: float) -> str:
+    composite = (price_change_pct / 100.0) + avg_sentiment
+    if composite >= 0.18:
+        return 'Uptrend likely to continue'
+    if composite >= 0.05:
+        return 'Positive bias with manageable volatility'
+    if composite <= -0.18:
+        return 'Downtrend risk remains elevated'
+    if composite <= -0.05:
+        return 'Weak trend with bearish pressure'
+    return 'Sideways until a stronger catalyst appears'
+
+
+def _build_llm_asset_context(asset: Dict[str, Any]) -> Dict[str, Any]:
+    historical_data = asset.get('historical_data') or {}
+    points = (historical_data.get('points') or [])[-8:]
+    recent_closes = []
+
+    for point in points:
+        close_value = point.get('close')
+        if close_value is None:
+            continue
+        recent_closes.append({
+            't': point.get('t'),
+            'close': close_value,
+        })
+
+    return {
+        'symbol': asset.get('symbol'),
+        'price': asset.get('price'),
+        'price_change': asset.get('price_change'),
+        'price_change_pct': asset.get('price_change_pct'),
+        'sentiment': asset.get('sentiment'),
+        'history_period': historical_data.get('period'),
+        'recent_closes': recent_closes,
+        'latest_quote': (historical_data.get('quote') or {}).get('price'),
+    }
+
+
+def _history_payload_to_ohlcv_df(history_payload: Dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    for point in (history_payload.get('points') or []):
+        timestamp = point.get('t')
+        if not timestamp:
+            continue
+        rows.append(
+            {
+                'Date': pd.to_datetime(timestamp, utc=True, errors='coerce'),
+                'Open': point.get('open'),
+                'High': point.get('high'),
+                'Low': point.get('low'),
+                'Close': point.get('close'),
+                'Volume': point.get('volume'),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    df = df.dropna(subset=['Date', 'Close']).set_index('Date').sort_index()
+    for column in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        df[column] = pd.to_numeric(df[column], errors='coerce')
+    df['Volume'] = df['Volume'].fillna(0.0)
+    return df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+
+
+def _fallback_explanation(shap_context: Dict[str, Any], prompt: str) -> Dict[str, Any]:
+    symbol = str(shap_context.get('symbol') or 'Asset')
+    price = shap_context.get('price')
+    price_change_pct = float(shap_context.get('price_change_pct') or 0.0)
+    sentiment = shap_context.get('sentiment') or {}
+    sentiment_label = sentiment.get('heatmap_label') or _sentiment_label(float(sentiment.get('avg_sentiment') or 0.0))
+    avg_sentiment = float(sentiment.get('avg_sentiment') or 0.0)
+    outlook = _trend_outlook(price_change_pct, avg_sentiment)
+
+    lines = [
+        f"{symbol} is trading around {price if price is not None else 'an unavailable price'}.",
+        f"Recent price performance is {price_change_pct:.2f}% and the news tone is {sentiment_label}.",
+        f"Current outlook: {outlook}.",
+        f"Requested focus: {prompt}",
+        "This is a rule-based fallback summary because the LLM service is unavailable.",
+    ]
+
+    return {
+        'model_used': 'rule-based-fallback',
+        'used_fallback': True,
+        'explanation': ' '.join(lines),
+    }
+
+
+async def _build_watch_asset_news(symbol: str, api_key: Optional[str]) -> Dict[str, Any]:
+    from app.api.analytics import get_asset_detail
+
+    asset = await get_asset_detail(symbol, '1mo')
+    price = float(asset.get('price') or 0.0)
+    price_change_pct = float(asset.get('price_change_pct') or 0.0)
+    scored: List[Dict[str, Any]] = []
+    raw_articles: List[Dict[str, Any]] = []
+
+    if api_key:
+      to_dt = datetime.utcnow()
+      from_dt = to_dt - timedelta(days=7)
+      raw_articles = await run_in_threadpool(fetch_news_for_symbol, api_key, symbol, from_dt, to_dt, 8)
+      scored = await run_in_threadpool(_score_articles_finbert, _SENTIMENT_ANALYZER, raw_articles, max_articles=8)
+
+    avg_sentiment = float(sum(item['score'] for item in scored) / len(scored)) if scored else 0.0
+
+    articles = []
+    for index, article in enumerate(raw_articles[:6]):
+        scored_item = scored[index] if index < len(scored) else None
+        articles.append(
+            {
+                'title': article.get('title') or 'Untitled article',
+                'source': (article.get('source') or {}).get('name') or 'Unknown source',
+                'url': article.get('url'),
+                'published_at': article.get('publishedAt'),
+                'excerpt': _article_excerpt(article),
+                'sentiment_label': scored_item.get('label') if scored_item else 'UNSCORED',
+                'sentiment_score': float(scored_item.get('score', 0.0)) if scored_item else 0.0,
+            }
+        )
+
+    return {
+        'symbol': symbol,
+        'display_name': symbol,
+        'price': price,
+        'price_change_pct': price_change_pct,
+        'avg_sentiment': avg_sentiment,
+        'sentiment_label': _sentiment_label(avg_sentiment),
+        'articles_count': len(articles),
+        'articles': articles,
+    }
+
+
+async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[str]) -> Dict[str, Any]:
+    from app.api.analytics import get_asset_detail
+    from app.api.market import get_historical_data
+
+    asset = await get_asset_detail(symbol, '1mo')
+    history_payload = await get_historical_data(symbol, 'year')
+    df = await run_in_threadpool(_history_payload_to_ohlcv_df, history_payload)
+    if len(df) > 180:
+        df = df.tail(180)
+    if df is None or getattr(df, 'empty', True):
+        raise HTTPException(status_code=400, detail=f'no price data for {symbol}')
+
+    articles: List[Dict[str, Any]] = []
+    if api_key:
+        to_dt = datetime.utcnow()
+        from_dt = to_dt - timedelta(days=30)
+        articles = await run_in_threadpool(fetch_news_for_symbol, api_key, symbol, from_dt, to_dt, 25)
+
+    scored = await run_in_threadpool(_score_articles_finbert, _SENTIMENT_ANALYZER, articles, max_articles=25)
+    sentiment_series = await run_in_threadpool(_build_sentiment_series, df, scored)
+    latest_sentiment = float(sentiment_series.iloc[-1]) if len(sentiment_series) else 0.0
+
+    signal = 'HOLD'
+    probability_up = 0.5
+    confidence = 50
+    rationale = []
+    try:
+        forecaster = MarketForecaster()
+        await run_in_threadpool(forecaster.train_model, df, sentiment_series)
+        df2 = df.copy()
+        df2['sentiment_score'] = sentiment_series
+        signal = await run_in_threadpool(forecaster.generate_signal, df2)
+        row = forecaster._to_feature_row(df2)  # type: ignore[attr-defined]
+        probability_up = float(forecaster.model.predict_proba(row)[0, 1])  # type: ignore[union-attr]
+        confidence = int(round(max(probability_up, 1 - probability_up) * 100))
+        shap_expl = await run_in_threadpool(forecaster.get_shap_explanation, df2)
+        rationale = [
+            f"Price trend: {asset.get('price_change_pct', 0):.2f}% over the selected window.",
+            f"News sentiment: {_sentiment_label(latest_sentiment)} ({latest_sentiment:.2f}).",
+        ]
+        for feature in (shap_expl.get('top_features') or [])[:3]:
+            direction = 'supports upside' if feature.get('direction') == 'positive' else 'adds downside risk'
+            rationale.append(f"{feature.get('feature')}: {direction} ({feature.get('impact_pct', 0):.1f}% impact).")
+    except Exception:
+        price_change_pct = float(asset.get('price_change_pct') or 0.0)
+        outlook = _trend_outlook(price_change_pct, latest_sentiment)
+        if latest_sentiment > 0.1 and price_change_pct > 0:
+            signal = 'BUY'
+            probability_up = 0.62
+        elif latest_sentiment < -0.1 and price_change_pct < 0:
+            signal = 'SELL'
+            probability_up = 0.38
+        else:
+            signal = 'HOLD'
+            probability_up = 0.5
+        confidence = int(round(abs(latest_sentiment) * 50 + min(abs(price_change_pct), 10) * 5))
+        rationale = [
+            f"Outlook: {outlook}.",
+            f"Recent price change is {price_change_pct:.2f}%.",
+            f"Average news sentiment score is {latest_sentiment:.2f}.",
+        ]
+
+    recommendation_map = {
+        'BUY': 'Bullish',
+        'SELL': 'Bearish',
+        'HOLD': 'Neutral',
+    }
+
+    return {
+        'symbol': symbol,
+        'display_name': symbol,
+        'signal': signal,
+        'recommendation': recommendation_map.get(signal, signal),
+        'confidence': confidence,
+        'probability_up': probability_up,
+        'latest_price': float(asset.get('price') or 0.0),
+        'price_change_pct': float(asset.get('price_change_pct') or 0.0),
+        'latest_sentiment_score': latest_sentiment,
+        'trend_summary': _trend_outlook(float(asset.get('price_change_pct') or 0.0), latest_sentiment),
+        'rationale': rationale,
+    }
+
+
 class SentimentRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000)
 
@@ -165,6 +426,13 @@ class BotEvaluateRequest(BaseModel):
     signal: str
     current_price: float
     risk_profile: Dict[str, Any]
+
+
+class WatchlistAssistantRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=16)
+    prompt: str = Field(..., min_length=1, max_length=2000)
+    range: str = Field('1mo')
+    user_preference: str = Field('open-source')
 
 
 @router.post("/sentiment/analyze")
@@ -372,12 +640,16 @@ async def v2_llm_explain(req: ExplainLLMRequest, user=Depends(get_current_user))
     user_pref = "custom" if pref == "custom" else "open-source"
 
     try:
-        res = await _DUAL_LLM.generate_explanation(user_pref, req.shap_context, req.prompt)
-        return res
+        explanation = await _DUAL_LLM.generate_explanation(user_pref, req.shap_context, req.prompt)
+        return {
+            'model_used': _DUAL_LLM.last_model_used,
+            'used_fallback': _DUAL_LLM.last_used_fallback,
+            'explanation': explanation,
+        }
     except DualLLMManagerError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return _fallback_explanation(req.shap_context, req.prompt)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return _fallback_explanation(req.shap_context, req.prompt)
 
 
 @router.post("/public/explain")
@@ -390,21 +662,22 @@ async def v2_public_llm_explain(req: GuestExplainRequest, _: None = Depends(enfo
         from app.api.analytics import get_asset_detail
 
         asset = await get_asset_detail(symbol, req.range)
-        shap_context = {
-            'symbol': asset.get('symbol'),
-            'price': asset.get('price'),
-            'price_change': asset.get('price_change'),
-            'price_change_pct': asset.get('price_change_pct'),
-            'sentiment': asset.get('sentiment'),
-            'historical_data': asset.get('historical_data'),
-        }
-        return await _DUAL_LLM.generate_explanation('open-source', shap_context, req.prompt)
+        shap_context = _build_llm_asset_context(asset)
+        try:
+            explanation = await _DUAL_LLM.generate_explanation('open-source', shap_context, req.prompt)
+            return {
+                'model_used': _DUAL_LLM.last_model_used,
+                'used_fallback': _DUAL_LLM.last_used_fallback,
+                'explanation': explanation,
+            }
+        except Exception:
+            return _fallback_explanation(shap_context, req.prompt)
     except HTTPException:
         raise
     except DualLLMManagerError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return _fallback_explanation({'symbol': symbol}, req.prompt)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return _fallback_explanation({'symbol': symbol}, req.prompt)
 
 
 @router.post("/bot/evaluate")
@@ -421,3 +694,101 @@ async def v2_bot_evaluate(req: BotEvaluateRequest, user=Depends(get_current_user
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/watchlist/news')
+async def watchlist_news(user=Depends(get_current_user)):
+    owner = user.get('sub')
+    if not owner:
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    symbols = await _get_watchlist_symbols(owner)
+    if not symbols:
+        return []
+
+    api_key = await _get_newsapi_key_for_owner(owner)
+    payload = []
+    for symbol in symbols:
+        try:
+            payload.append(await _build_watch_asset_news(symbol, api_key))
+        except Exception as e:
+            logger.warning('watchlist_news_failed symbol=%s error=%s', symbol, e)
+            payload.append({
+                'symbol': symbol,
+                'display_name': symbol,
+                'price': 0.0,
+                'price_change_pct': 0.0,
+                'avg_sentiment': 0.0,
+                'sentiment_label': 'Unavailable',
+                'articles_count': 0,
+                'articles': [],
+            })
+    return payload
+
+
+@router.get('/watchlist/insights')
+async def watchlist_insights(user=Depends(get_current_user)):
+    owner = user.get('sub')
+    if not owner:
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    symbols = await _get_watchlist_symbols(owner)
+    if not symbols:
+        return []
+
+    api_key = await _get_newsapi_key_for_owner(owner)
+    payload = []
+    for symbol in symbols:
+        try:
+            payload.append(await _build_watch_asset_insight(symbol, owner, api_key))
+        except Exception as e:
+            logger.warning('watchlist_insight_failed symbol=%s error=%s', symbol, e)
+            payload.append({
+                'symbol': symbol,
+                'display_name': symbol,
+                'signal': 'HOLD',
+                'recommendation': 'Neutral',
+                'confidence': 0,
+                'probability_up': 0.5,
+                'latest_price': 0.0,
+                'price_change_pct': 0.0,
+                'latest_sentiment_score': 0.0,
+                'trend_summary': 'Insight generation is temporarily unavailable.',
+                'rationale': ['Price history could not be loaded for this symbol yet.'],
+            })
+    return payload
+
+
+@router.post('/assistant/explain')
+async def watchlist_assistant_explain(req: WatchlistAssistantRequest, user=Depends(get_current_user)):
+    owner = user.get('sub')
+    if not owner:
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    symbol = _normalize_symbol(req.symbol)
+    symbols = await _get_watchlist_symbols(owner)
+    if symbol not in symbols:
+        raise HTTPException(status_code=403, detail='symbol_not_in_watchlist')
+
+    try:
+        from app.api.analytics import get_asset_detail
+
+        asset = await get_asset_detail(symbol, req.range)
+        shap_context = _build_llm_asset_context(asset)
+        pref = (req.user_preference or '').strip().lower()
+        user_pref = 'custom' if pref == 'custom' else 'open-source'
+        try:
+            explanation = await _DUAL_LLM.generate_explanation(user_pref, shap_context, req.prompt)
+            return {
+                'model_used': _DUAL_LLM.last_model_used,
+                'used_fallback': _DUAL_LLM.last_used_fallback,
+                'explanation': explanation,
+            }
+        except Exception:
+            return _fallback_explanation(shap_context, req.prompt)
+    except HTTPException:
+        raise
+    except DualLLMManagerError as e:
+        return _fallback_explanation({'symbol': symbol}, req.prompt)
+    except Exception as e:
+        return _fallback_explanation({'symbol': symbol}, req.prompt)

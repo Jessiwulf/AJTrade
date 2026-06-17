@@ -275,6 +275,28 @@ def _fetch_history(symbol: str, range_name: str) -> dict:
         }
 
 
+async def get_market_price(symbol: str):
+    normalized = _normalize_symbol(symbol)
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid symbol')
+
+    chart = await run_in_threadpool(_fetch_yahoo_chart_with_variants, normalized, 'day')
+    quote = chart.get('quote') or {}
+    price = quote.get('price')
+    if price is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'No price data found for {normalized}')
+    return price
+
+
+async def get_historical_data(symbol: str, range_: str = '1mo'):
+    normalized = _normalize_symbol(symbol)
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid symbol')
+
+    range_name = _normalize_range(range_)
+    return await run_in_threadpool(_fetch_history, normalized, range_name)
+
+
 def _fetch_quotes(symbols: List[str]) -> List[dict]:
     out = []
     for raw_symbol in symbols:
