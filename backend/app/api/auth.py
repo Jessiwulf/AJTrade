@@ -22,6 +22,12 @@ class EmailPayload(BaseModel):
     email: EmailStr
 
 
+class ResetPasswordIn(BaseModel):
+    token: str
+    newPassword: str
+    confirmPassword: str
+
+
 class ProfileIn(BaseModel):
     full_name: str | None = None
     avatar_url: str | None = None
@@ -104,6 +110,52 @@ async def password_reset(payload: EmailPayload):
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return res
+
+
+@router.post('/reset-password')
+async def reset_password_request(payload: EmailPayload):
+    # Anti-enumeration: always return HTTP 200, regardless of account existence.
+    try:
+        supabase_auth.send_password_reset(payload.email)
+    except Exception:
+        pass
+    return {'message': 'If this email is registered, a reset link has been sent.'}
+
+
+@router.put('/reset-password')
+async def reset_password(payload: ResetPasswordIn):
+    token = (payload.token or '').strip()
+    new_password = payload.newPassword or ''
+    confirm_password = payload.confirmPassword or ''
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail='Reset link has expired. Please request a new one.',
+        )
+
+    if len(new_password) < 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Password must be at least 6 characters.')
+
+    if new_password != confirm_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Passwords do not match')
+
+    verified = supabase_auth.verify_jwt(token)
+    if not verified:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail='Reset link has expired. Please request a new one.',
+        )
+
+    try:
+        supabase_auth.update_password_with_token(token, new_password)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail='Reset link has expired. Please request a new one.',
+        )
+
+    return {'message': 'Password reset successfully. Please log in.'}
 
 
 def _profile_defaults(user: dict) -> dict:

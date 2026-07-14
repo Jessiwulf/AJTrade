@@ -12,12 +12,12 @@ export default function PasswordReset() {
     e.preventDefault()
     setMsg('...')
     try {
-      await apiFetch('/api/auth/password-reset', {
+      const data = await apiFetch('/auth/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       })
-      setMsg('Password reset requested; check your email')
+      setMsg(data?.message || 'If this email is registered, a reset link has been sent.')
     } catch (err) {
       setMsg('Error: ' + err.message)
     }

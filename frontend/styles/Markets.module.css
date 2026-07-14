@@ -3,6 +3,63 @@
   gap: 16px;
 }
 
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filterGroup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filterLabel {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aj-text-muted);
+}
+
+.filterButton {
+  border: 1px solid var(--aj-border);
+  border-radius: 999px;
+  background: var(--aj-surface);
+  color: var(--aj-text);
+  padding: 8px 12px;
+  font-weight: 700;
+}
+
+.filterButtonActive {
+  border-color: var(--aj-accent-border);
+  background: var(--aj-accent-soft);
+  color: var(--aj-indigo);
+}
+
+.dateGroup {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dateField {
+  display: grid;
+  gap: 6px;
+}
+
+.dateInput {
+  border: 1px solid var(--aj-border);
+  border-radius: 12px;
+  background: var(--aj-surface);
+  color: var(--aj-text);
+  padding: 8px 10px;
+}
+
 .assetCard {
   background: var(--aj-bg);
   border: 1px solid var(--aj-border);
@@ -26,6 +83,10 @@
   font-weight: 900;
   color: var(--aj-indigo);
   letter-spacing: -0.02em;
+}
+
+.assetTitleBlock {
+  min-width: 0;
 }
 
 .meta {
@@ -95,6 +156,38 @@
 .articleLink {
   color: var(--aj-indigo);
   font-weight: 700;
+}
+
+.articleActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.loadMoreButton {
+  border: 1px solid var(--aj-border);
+  border-radius: 999px;
+  background: var(--aj-surface);
+  color: var(--aj-text);
+  padding: 8px 12px;
+  font-weight: 700;
+}
+
+.secondaryButton {
+  border: 1px solid var(--aj-border);
+  border-radius: 999px;
+  background: var(--aj-bg);
+  color: var(--aj-text);
+  padding: 8px 12px;
+  font-weight: 700;
+}
+
+.inlineError {
+  margin: 0;
+  color: var(--aj-negative);
+  font-size: 13px;
 }
 
 .noArticles,

@@ -97,6 +97,21 @@ def send_password_reset(email: str) -> Dict[str, Any]:
     return r.json()
 
 
+def update_password_with_token(token: str, new_password: str) -> Dict[str, Any]:
+    base = _get_supabase_url()
+    anon_key = _get_supabase_anon_key()
+    url = f"{base}/auth/v1/user"
+    headers = {
+        "apikey": anon_key,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {"password": new_password}
+    r = httpx.put(url, json=payload, headers=headers, timeout=10.0)
+    r.raise_for_status()
+    return r.json()
+
+
 def verify_jwt(token: str) -> Optional[Dict[str, Any]]:
     """Verify Supabase JWT using JWKs. Returns payload or None on failure."""
     if not token:

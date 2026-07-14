@@ -1,3 +1,4 @@
+import logging
 import re
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ from app.core.alpaca import get_alpaca_account, get_alpaca_positions, submit_alp
 from app.core.db import get_database
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,24}$")
 
@@ -365,7 +367,27 @@ async def place_paper_order(payload: PaperOrderIn, user=Depends(get_current_user
         notes=payload.notes or f"Alpaca paper order {order.get('id')}",
     )
     await _upsert_watchlist_symbol(db, owner, symbol)
-    sync_result = await _sync_portfolio_from_alpaca(db, owner)
+    sync_result = None
+    sync_error = None
+    try:
+        sync_result = await _sync_portfolio_from_alpaca(db, owner)
+    except HTTPException as exc:
+        sync_error = str(exc.detail or exc)
+        logger.warning('paper_order_sync_pending owner=%s symbol=%s status=%s error=%s', owner, symbol, order.get('status'), sync_error)
+    except Exception as exc:
+        sync_error = str(exc)
+        logger.warning('paper_order_sync_pending owner=%s symbol=%s status=%s error=%s', owner, symbol, order.get('status'), sync_error)
+
+    created_at_value = trade_row.get("created_at")
+    created_at_iso = None
+    if created_at_value is not None:
+        try:
+            if hasattr(created_at_value, 'isoformat'):
+                created_at_iso = created_at_value.isoformat()
+            else:
+                created_at_iso = str(created_at_value)
+        except Exception:
+            created_at_iso = str(created_at_value)
 
     return {
         "order": {
@@ -381,11 +403,13 @@ async def place_paper_order(payload: PaperOrderIn, user=Depends(get_current_user
         },
         "transaction": {
             "id": str(trade_row["id"]),
-            "created_at": trade_row["created_at"].isoformat() if trade_row.get("created_at") else None,
+            "created_at": created_at_iso,
         },
         "sync": sync_result,
+        "sync_status": "synced" if sync_result else "pending",
+        "sync_error": sync_error,
+        "synced_portfolio": sync_result,
     }
-
 
 @router.post('/initialize')
 async def initialize_portfolio(payload: InitializePortfolioIn, user=Depends(get_current_user)):

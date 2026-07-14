@@ -46,6 +46,7 @@ async def health():
 # Mount API routers
 app.include_router(api_router.router, prefix='/api')
 app.include_router(auth_router.router, prefix='/api/auth')
+app.include_router(auth_router.router, prefix='/auth')
 
 # Optional routers (Vault/ML). These can be disabled if optional deps are missing.
 try:
@@ -89,6 +90,13 @@ try:
     app.include_router(market_router.router, prefix='/api/market')
 except Exception as e:
     logger.warning("Market router not loaded: %s", e)
+
+try:
+    from app.api import profile as profile_router
+
+    app.include_router(profile_router.router, prefix='/api/profile')
+except Exception as e:
+    logger.warning("Profile router not loaded: %s", e)
 
 try:
     from app.api import analytics as analytics_router

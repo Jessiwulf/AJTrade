@@ -64,7 +64,7 @@ export default function Login() {
           </form>
 
           <div className={styles.links}>
-            <Link href="/password-reset">Password reset</Link>
+            <Link href="/password-reset">Forgot Password?</Link>
             <Link href="/signup">Create account</Link>
           </div>
 

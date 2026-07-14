@@ -3,6 +3,10 @@ import AppShell from '../components/AppShell'
 import { apiFetch } from '../lib/api'
 import styles from '../styles/Manage.module.css'
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function formatDate(value) {
   try {
     if (!value) return ''
@@ -34,36 +38,84 @@ export default function PortfolioPage() {
     return `${styles.msg} ${styles.msgSuccess}`
   }, [message])
 
-  async function loadPortfolio() {
-    setLoading(true)
-    setMessage(null)
+  async function fetchPortfolioSnapshot() {
+    const data = await apiFetch('/api/portfolio')
+    return {
+      data,
+      needsInit: false,
+    }
+  }
+
+  async function fetchPaperAccountSnapshot() {
+    return apiFetch('/api/portfolio/paper-account')
+  }
+
+  async function loadPortfolio(options = {}) {
+    const { quiet = false } = options
+    if (!quiet) {
+      setLoading(true)
+      setMessage(null)
+    }
     try {
-      const data = await apiFetch('/api/portfolio')
+      const { data } = await fetchPortfolioSnapshot()
       setPortfolio(data)
       setNeedsInit(false)
-      setCash(String(data.cash_balance ?? ''))
+      setCash(String(data?.cash_balance ?? ''))
+      return data
     } catch (e) {
-      const msg = String(e?.message || '')
+      const msg = String(e?.message || 'Unknown error')
       if (msg.toLowerCase().includes('not initialized')) {
         setPortfolio(null)
         setNeedsInit(true)
         setCash('')
+        return null
       } else {
-        setMessage(`Error: ${msg}`)
+        if (!quiet) setMessage(`Error: ${msg}`)
       }
     } finally {
-      setLoading(false)
+      if (!quiet) setLoading(false)
     }
+    return null
   }
 
-  async function loadPaperAccount() {
+  async function loadPaperAccount(options = {}) {
+    const { quiet = false } = options
     try {
-      const data = await apiFetch('/api/portfolio/paper-account')
+      const data = await fetchPaperAccountSnapshot()
       setPaperAccount(data)
+      return data
     } catch (e) {
       setPaperAccount(null)
-      setMessage(`Error: ${e.message}`)
+      if (!quiet) setMessage(`Error: ${e?.message || 'Unknown error'}`)
     }
+    return null
+  }
+
+  async function refreshOrderState() {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        await apiFetch('/api/portfolio/sync-paper', { method: 'POST' })
+        await Promise.all([
+          loadPortfolio({ quiet: true }),
+          loadPaperAccount({ quiet: true }),
+        ])
+        return true
+      } catch {
+        if (attempt < 3) {
+          await wait(1500 * (attempt + 1))
+        }
+      }
+    }
+
+    try {
+      await Promise.all([
+        loadPortfolio({ quiet: true }),
+        loadPaperAccount({ quiet: true }),
+      ])
+    } catch {
+      // best-effort refresh only
+    }
+    return false
   }
 
   async function initialize() {
@@ -170,7 +222,7 @@ export default function PortfolioPage() {
     setLoading(true)
     setMessage(null)
     try {
-      await apiFetch('/api/portfolio/paper-orders', {
+      const result = await apiFetch('/api/portfolio/paper-orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -182,10 +234,24 @@ export default function PortfolioPage() {
       })
       setOrderQuantity('')
       setOrderNotional('')
-      await Promise.all([loadPortfolio(), loadPaperAccount()])
-      setMessage(`${orderSide} paper order submitted`)
+      
+      let synced = false
+      try {
+        synced = result?.sync_status === 'synced' ? true : await refreshOrderState()
+      } catch (syncError) {
+        console.error('Portfolio sync failed:', syncError)
+        synced = false
+      }
+      
+      if (synced) {
+        setMessage(`${orderSide} paper order submitted and portfolio refreshed`)
+      } else {
+        setMessage(
+          `${orderSide} order was accepted by Alpaca. Portfolio sync is still pending, so holdings may update shortly.`
+        )
+      }
     } catch (e) {
-      setMessage(`Error: ${e.message}`)
+      setMessage(`Error: ${e?.message || 'Order submission failed'}`)
     } finally {
       setLoading(false)
     }

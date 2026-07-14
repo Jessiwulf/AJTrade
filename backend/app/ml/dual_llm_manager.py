@@ -25,14 +25,14 @@ class DualLLMManager:
     or execute orders.
     """
 
-    model_open_source = "llama3:8b"
+    model_open_source = "qwen3.5:2b"
     model_custom = "ajtrade-custom-v1"
 
     def __init__(
         self,
         *,
         ollama_host: Optional[str] = None,
-        timeout_s: float = 90.0,
+        timeout_s: float = 180.0,
     ) -> None:
         base_host = (ollama_host or os.environ.get("OLLAMA_HOST") or "http://ollama:11434").rstrip("/")
         self.ollama_generate_url = f"{base_host}/api/generate"
@@ -50,13 +50,22 @@ class DualLLMManager:
     @staticmethod
     def _build_system_prompt() -> str:
         return (
-            "You are AJTrade's Conversational Agent. Your job is to EXPLAIN model outputs, not to trade.\n"
-            "Rules (strict):\n"
-            "1) Use ONLY the provided SHAP context. Do not add facts or assumptions.\n"
-            "2) Do NOT give financial advice, recommendations, or guarantees.\n"
-            "3) Do NOT invent prices, news, indicators, or portfolio data.\n"
-            "4) If information is missing from the SHAP context, say 'Not enough information'.\n"
-            "5) Output must be concise and human-readable (short paragraphs or bullets)."
+            "You are a highly intelligent and concise AI assistant for AJTrade. "
+            "You MUST obey the following strict rules unconditionally:\n\n"
+            "=== 1. LANGUAGE & TONE ===\n"
+            "- You MUST reply ONLY in the exact language the user typed. If they type in Thai, reply ONLY in Thai. If English, ONLY English. NO Korean, NO Chinese.\n"
+            "- Answer directly. NEVER start with robotic filler phrases like 'Based on the provided context...', 'Here is the summary...', or 'According to the data...'.\n\n"
+            "=== 2. ZERO HALLUCINATION (CRITICAL) ===\n"
+            "- Treat ticker symbols (e.g., 'USA', 'BTC', 'AAPL') purely as symbols. NEVER invent corporate backgrounds, country descriptions, or assume you know what the asset does.\n"
+            "- NEVER invent prices, dates, calculations, or market events. Use ONLY the exact numbers provided in the BACKGROUND_DATA.\n"
+            "- Do not give guaranteed financial advice.\n\n"
+            "=== 3. STRICT FORMATTING ===\n"
+            "- ALWAYS use double newlines (\\n\\n) to separate paragraphs.\n"
+            "- If making a list, use a simple dash (-) and force a double newline (\\n\\n) after each item.\n"
+            "- AVOID excessive markdown formatting. DO NOT put brackets or multiple asterisks around numbers (e.g., NEVER write [**$5.8**] or ****6.8****). Write numbers plainly like $5.80 or 5.80.\n\n"
+            "=== 4. GENERAL CHAT VS DATA ===\n"
+            "- If the user says 'Hello' or asks a general question ('1+1', 'What is AI?'), just answer naturally and concisely. Ignore the BACKGROUND_DATA entirely.\n"
+            "- Only use the BACKGROUND_DATA if the user specifically asks about the asset's prediction, trend, or risks. Explain it simply without technical jargon."
         )
 
     async def _ollama_generate(self, *, model: str, system: str, prompt: str) -> str:
@@ -65,8 +74,9 @@ class DualLLMManager:
             "system": system,
             "prompt": prompt,
             "stream": False,
+            "think": False,
         }
-        timeout = httpx.Timeout(self.timeout_s)
+        timeout = httpx.Timeout(connect=20.0, read=self.timeout_s, write=20.0, pool=20.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(self.ollama_generate_url, json=payload)
@@ -81,7 +91,7 @@ class DualLLMManager:
             raise DualLLMManagerError("ollama_empty_response")
         return text
 
-    async def generate_explanation(self, user_preference: str, shap_context: Dict[str, Any], predicted_signal: str) -> str:
+    async def generate_explanation(self, user_preference: str, shap_context: Dict[str, Any], user_message: str) -> str:
         """Generate a human-readable explanation using the selected LLM with strict fallback.
 
         Routing:
@@ -102,12 +112,19 @@ class DualLLMManager:
         except Exception as e:
             raise DualLLMManagerError("shap_context is not JSON-serializable") from e
 
+        signal_value = str(
+            shap_context.get("signal")
+            or shap_context.get("recommendation")
+            or shap_context.get("outlook")
+            or "Not provided"
+        )
+
         user_prompt = (
-            "SHAP_CONTEXT_JSON:\n"
-            f"{shap_json}\n\n"
-            "REQUEST_OR_SIGNAL:\n"
-            f"{predicted_signal}\n\n"
-            "Respond using ONLY SHAP_CONTEXT_JSON."
+            "--- BACKGROUND_DATA (Use this ONLY if the user's message is about analyzing the asset or signal) ---\n"
+            f"Signal: {signal_value}\n"
+            f"SHAP Values: {shap_json}\n"
+            "--------------------------------------------------\n\n"
+            f"USER_MESSAGE:\n{user_message}"
         )
 
         self.last_used_fallback = False

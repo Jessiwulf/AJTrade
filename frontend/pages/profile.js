@@ -18,6 +18,13 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState({ full_name: '', avatar_url: '', email: '' })
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState(null)
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmNewPassword: '',
+  })
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordMessage, setPasswordMessage] = useState('')
 
   function handleAvatarUpload(event) {
     const file = event.target.files?.[0]
@@ -88,6 +95,40 @@ export default function ProfilePage() {
   useEffect(() => {
     refresh()
   }, [])
+
+  async function changePassword() {
+    setPasswordError('')
+    setPasswordMessage('')
+
+    if (passwordForm.newPassword.length < 6) {
+      setPasswordError('Password must be at least 6 characters.')
+      return
+    }
+    if (passwordForm.newPassword !== passwordForm.confirmNewPassword) {
+      setPasswordError('Passwords do not match')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const data = await apiFetch('/api/profile/password', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(passwordForm),
+      })
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmNewPassword: '' })
+      setPasswordMessage(data?.message || 'Password Changed Successfully.')
+    } catch (e) {
+      const msg = e?.message || 'Unable to change password.'
+      if (msg === 'Current password is incorrect.') {
+        setPasswordError('Current password is incorrect.')
+      } else {
+        setPasswordError(msg)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const avatar = profile.avatar_url?.trim()
   const label = profile.full_name?.trim() || profile.email || 'User'
@@ -164,6 +205,52 @@ export default function ProfilePage() {
           </div>
 
           {message ? <p className={messageClass}>{message}</p> : null}
+        </section>
+
+        <section className={styles.card} aria-label="Change password">
+          <p className={styles.cardTitle}>Change Password</p>
+
+          <div className={styles.field}>
+            <div className={styles.label}>Current Password</div>
+            <input
+              type="password"
+              className={styles.input}
+              value={passwordForm.currentPassword}
+              onChange={(e) => setPasswordForm((prev) => ({ ...prev, currentPassword: e.target.value }))}
+              autoComplete="current-password"
+            />
+          </div>
+
+          <div className={styles.field}>
+            <div className={styles.label}>New Password</div>
+            <input
+              type="password"
+              className={styles.input}
+              value={passwordForm.newPassword}
+              onChange={(e) => setPasswordForm((prev) => ({ ...prev, newPassword: e.target.value }))}
+              autoComplete="new-password"
+            />
+          </div>
+
+          <div className={styles.field}>
+            <div className={styles.label}>Confirm New Password</div>
+            <input
+              type="password"
+              className={styles.input}
+              value={passwordForm.confirmNewPassword}
+              onChange={(e) => setPasswordForm((prev) => ({ ...prev, confirmNewPassword: e.target.value }))}
+              autoComplete="new-password"
+            />
+          </div>
+
+          <div className={styles.rowWrap} style={{ marginTop: 14 }}>
+            <button type="button" className={styles.primary} onClick={changePassword} disabled={loading}>
+              Change Password
+            </button>
+          </div>
+
+          {passwordError ? <p className={`${styles.msg} ${styles.msgError}`}>{passwordError}</p> : null}
+          {passwordMessage ? <p className={`${styles.msg} ${styles.msgSuccess}`}>{passwordMessage}</p> : null}
         </section>
       </div>
     </AppShell>

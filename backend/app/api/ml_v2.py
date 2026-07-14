@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -52,6 +52,18 @@ def _article_excerpt(article: Dict[str, Any]) -> str:
     return text
 
 
+def _asset_display_name(asset: Dict[str, Any], symbol: str) -> str:
+    historical_data = asset.get('historical_data') or {}
+    quote = historical_data.get('quote') or {}
+    return str(
+        quote.get('display_name')
+        or quote.get('short_name')
+        or quote.get('long_name')
+        or asset.get('display_name')
+        or symbol
+    )
+
+
 def _parse_published_date(article: Dict[str, Any]) -> Optional[pd.Timestamp]:
     s = article.get("publishedAt")
     if not s:
@@ -63,6 +75,31 @@ def _parse_published_date(article: Dict[str, Any]) -> Optional[pd.Timestamp]:
         return ts.tz_convert(None).normalize()
     except Exception:
         return None
+
+
+def _resolve_news_window(days: int, from_date: Optional[str], to_date: Optional[str]) -> Tuple[datetime, datetime]:
+    max_days = max(int(days), 1)
+    end_dt = datetime.utcnow()
+
+    if to_date:
+        try:
+            parsed_to = date.fromisoformat(str(to_date))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail='invalid_to_date') from exc
+        end_dt = datetime.combine(parsed_to, time.max)
+
+    start_dt = end_dt - timedelta(days=max_days)
+    if from_date:
+        try:
+            parsed_from = date.fromisoformat(str(from_date))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail='invalid_from_date') from exc
+        start_dt = datetime.combine(parsed_from, time.min)
+
+    if start_dt > end_dt:
+        raise HTTPException(status_code=400, detail='from_date_must_be_before_to_date')
+
+    return start_dt, end_dt
 
 
 async def _get_newsapi_key_for_owner(owner: str) -> Optional[str]:
@@ -267,25 +304,49 @@ def _fallback_explanation(shap_context: Dict[str, Any], prompt: str) -> Dict[str
     }
 
 
-async def _build_watch_asset_news(symbol: str, api_key: Optional[str]) -> Dict[str, Any]:
+async def _build_watch_asset_news(
+    symbol: str,
+    api_key: Optional[str],
+    *,
+    days: int = 30,
+    page: int = 1,
+    page_size: int = 6,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+) -> Dict[str, Any]:
     from app.api.analytics import get_asset_detail
 
     asset = await get_asset_detail(symbol, '1mo')
+    display_name = _asset_display_name(asset, symbol)
     price = float(asset.get('price') or 0.0)
     price_change_pct = float(asset.get('price_change_pct') or 0.0)
     scored: List[Dict[str, Any]] = []
     raw_articles: List[Dict[str, Any]] = []
+    from_dt, to_dt = _resolve_news_window(days, from_date, to_date)
 
     if api_key:
-      to_dt = datetime.utcnow()
-      from_dt = to_dt - timedelta(days=7)
-      raw_articles = await run_in_threadpool(fetch_news_for_symbol, api_key, symbol, from_dt, to_dt, 8)
-      scored = await run_in_threadpool(_score_articles_finbert, _SENTIMENT_ANALYZER, raw_articles, max_articles=8)
+        raw_articles = await run_in_threadpool(
+            fetch_news_for_symbol,
+            api_key,
+            symbol,
+            from_dt,
+            to_dt,
+            max(int(page_size), 1),
+            max(int(page), 1),
+            display_name,
+        )
+        scored = await run_in_threadpool(
+            _score_articles_finbert,
+            _SENTIMENT_ANALYZER,
+            raw_articles,
+            max_articles=max(int(page_size), 1),
+        )
 
     avg_sentiment = float(sum(item['score'] for item in scored) / len(scored)) if scored else 0.0
+    normalized_page_size = max(int(page_size), 1)
 
     articles = []
-    for index, article in enumerate(raw_articles[:6]):
+    for index, article in enumerate(raw_articles[:normalized_page_size]):
         scored_item = scored[index] if index < len(scored) else None
         articles.append(
             {
@@ -301,13 +362,19 @@ async def _build_watch_asset_news(symbol: str, api_key: Optional[str]) -> Dict[s
 
     return {
         'symbol': symbol,
-        'display_name': symbol,
+        'display_name': display_name,
         'price': price,
         'price_change_pct': price_change_pct,
         'avg_sentiment': avg_sentiment,
         'sentiment_label': _sentiment_label(avg_sentiment),
         'articles_count': len(articles),
         'articles': articles,
+        'page': max(int(page), 1),
+        'page_size': normalized_page_size,
+        'lookback_days': max(int(days), 1),
+        'from_date': from_dt.date().isoformat(),
+        'to_date': to_dt.date().isoformat(),
+        'has_more': len(raw_articles) >= normalized_page_size,
     }
 
 
@@ -697,7 +764,13 @@ async def v2_bot_evaluate(req: BotEvaluateRequest, user=Depends(get_current_user
 
 
 @router.get('/watchlist/news')
-async def watchlist_news(user=Depends(get_current_user)):
+async def watchlist_news(
+    days: int = Query(default=30, ge=1, le=90),
+    page_size: int = Query(default=6, ge=1, le=20),
+    from_date: Optional[str] = Query(default=None),
+    to_date: Optional[str] = Query(default=None),
+    user=Depends(get_current_user),
+):
     owner = user.get('sub')
     if not owner:
         raise HTTPException(status_code=401, detail='unauthorized')
@@ -710,7 +783,17 @@ async def watchlist_news(user=Depends(get_current_user)):
     payload = []
     for symbol in symbols:
         try:
-            payload.append(await _build_watch_asset_news(symbol, api_key))
+            payload.append(
+                await _build_watch_asset_news(
+                    symbol,
+                    api_key,
+                    days=days,
+                    page=1,
+                    page_size=page_size,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+            )
         except Exception as e:
             logger.warning('watchlist_news_failed symbol=%s error=%s', symbol, e)
             payload.append({
@@ -722,8 +805,45 @@ async def watchlist_news(user=Depends(get_current_user)):
                 'sentiment_label': 'Unavailable',
                 'articles_count': 0,
                 'articles': [],
+                'page': 1,
+                'page_size': page_size,
+                'lookback_days': days,
+                'from_date': from_date,
+                'to_date': to_date,
+                'has_more': False,
             })
     return payload
+
+
+@router.get('/watchlist/news/{symbol}')
+async def watch_asset_news(
+    symbol: str,
+    days: int = Query(default=30, ge=1, le=180),
+    page: int = Query(default=1, ge=1, le=20),
+    page_size: int = Query(default=6, ge=1, le=20),
+    from_date: Optional[str] = Query(default=None),
+    to_date: Optional[str] = Query(default=None),
+    user=Depends(get_current_user),
+):
+    owner = user.get('sub')
+    if not owner:
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    normalized_symbol = _normalize_symbol(symbol)
+    symbols = await _get_watchlist_symbols(owner)
+    if normalized_symbol not in symbols:
+        raise HTTPException(status_code=403, detail='symbol_not_in_watchlist')
+
+    api_key = await _get_newsapi_key_for_owner(owner)
+    return await _build_watch_asset_news(
+        normalized_symbol,
+        api_key,
+        days=days,
+        page=page,
+        page_size=page_size,
+        from_date=from_date,
+        to_date=to_date,
+    )
 
 
 @router.get('/watchlist/insights')

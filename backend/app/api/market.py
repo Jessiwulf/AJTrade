@@ -124,6 +124,10 @@ def _fetch_yahoo_chart(symbol: str, range_name: str) -> dict:
             'change_percent': float(change_pct) if change_pct is not None else None,
             'currency': meta.get('currency'),
             'market_cap': meta.get('marketCap'),
+            'short_name': meta.get('shortName'),
+            'long_name': meta.get('longName'),
+            'display_name': meta.get('shortName') or meta.get('longName') or symbol,
+            'exchange_name': meta.get('exchangeName'),
         },
     }
 
@@ -271,6 +275,13 @@ def _fetch_history(symbol: str, range_name: str) -> dict:
                 'change_percent': change_pct,
                 'currency': info.get('currency') if isinstance(info, dict) else None,
                 'market_cap': info.get('marketCap') if isinstance(info, dict) else None,
+                'short_name': info.get('shortName') if isinstance(info, dict) else None,
+                'long_name': info.get('longName') if isinstance(info, dict) else None,
+                'display_name': (
+                    info.get('shortName') if isinstance(info, dict) else None
+                ) or (
+                    info.get('longName') if isinstance(info, dict) else None
+                ) or symbol,
             },
         }
 

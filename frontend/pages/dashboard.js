@@ -291,7 +291,7 @@ function AssetChart({ chartData, timeframe, onTimeframeChange }) {
 
 function AIAssistantSidebar({ selectedAsset }) {
   const [messages, setMessages] = useState([
-    { id: 1, role: 'assistant', text: 'Hello. Ask anything about your selected watchlist asset.' },
+    { id: 1, role: 'assistant', text: 'Hello. Ask me anything about your selected watchlist asset or the market in general.' },
   ])
   const [input, setInput] = useState('')
   const [isSending, setIsSending] = useState(false)
@@ -344,7 +344,7 @@ function AIAssistantSidebar({ selectedAsset }) {
       <div className={styles.sidebarHeader}>
         <h3 className={styles.copilotTitle}>Ask the AI assistant</h3>
       </div>
-      <p className={styles.copilotSubtitle}>Market context · Llama 3 via Ollama</p>
+      <p className={styles.copilotSubtitle}>Natural market assistant · Ollama</p>
       <div className={styles.promptGrid}>
         {quickPrompts.map((prompt) => (
           <button key={prompt} type="button" className={styles.promptBtn} onClick={() => pushMessage(prompt)} disabled={isSending || !selectedAsset || selectedAsset === 'this asset'}>
@@ -366,7 +366,7 @@ function AIAssistantSidebar({ selectedAsset }) {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about market trends..."
+          placeholder="Ask about this asset or anything general..."
           aria-label="Chat input"
           disabled={isSending || !selectedAsset || selectedAsset === 'this asset'}
         />
