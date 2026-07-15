@@ -5,13 +5,29 @@ import { apiFetch } from '../../lib/api'
 import TopNav from '../../components/TopNav'
 import styles from '../../styles/Auth.module.css'
 
+function getTokenFromUrl() {
+  if (typeof window === 'undefined') return ''
+
+  // Supabase recovery links commonly place tokens in URL hash.
+  const hash = window.location.hash ? window.location.hash.slice(1) : ''
+  if (hash) {
+    const hashParams = new URLSearchParams(hash)
+    const hashToken = hashParams.get('access_token') || hashParams.get('token')
+    if (hashToken) return hashToken
+  }
+
+  // Fallback for query-param links.
+  const queryParams = new URLSearchParams(window.location.search || '')
+  return queryParams.get('token') || queryParams.get('access_token') || ''
+}
+
 export default function ResetPasswordPage() {
   const router = useRouter()
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [msg, setMsg] = useState('')
 
-  const token = useMemo(() => {
+  const tokenFromQuery = useMemo(() => {
     const raw = router.query?.token
     return typeof raw === 'string' ? raw : ''
   }, [router.query])
@@ -20,29 +36,33 @@ export default function ResetPasswordPage() {
     e.preventDefault()
     setMsg('')
 
+    // Validation
     if (newPassword.length < 6) {
       setMsg('Error: Password must be at least 6 characters.')
       return
     }
 
     if (newPassword !== confirmPassword) {
-      setMsg('Passwords do not match')
+      setMsg('Error: Passwords do not match')
       return
     }
 
     try {
+      const token = tokenFromQuery || getTokenFromUrl()
       const data = await apiFetch('/auth/reset-password', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, newPassword, confirmPassword }),
       })
-      const successMessage = data?.message || 'Password reset successfully. Please log in.'
-      setMsg(successMessage)
-      router.replace('/login')
+
+      setMsg(data?.message || 'Password reset successfully. Please log in.')
+      setTimeout(() => {
+        router.replace('/login')
+      }, 800)
     } catch (err) {
       const detail = String(err?.message || '')
-      if (detail === 'Reset link has expired. Please request a new one.') {
-        setMsg('Reset link has expired. Please request a new one.')
+      if (detail.includes('expired') || detail.includes('invalid')) {
+        setMsg('Error: Reset link has expired. Please request a new one.')
       } else {
         setMsg(`Error: ${detail || 'Unable to reset password.'}`)
       }

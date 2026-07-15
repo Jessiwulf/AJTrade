@@ -81,6 +81,19 @@
   font-weight: 700;
 }
 
+.success {
+  color: #00aa00;
+  font-weight: 700;
+}
+
+.errorBox {
+  padding: 16px;
+  background: rgba(255, 0, 0, 0.1);
+  border: 1px solid rgba(255, 0, 0, 0.3);
+  border-radius: 8px;
+  margin-top: 12px;
+}
+
 .links {
   margin-top: 14px;
   display: flex;

@@ -233,6 +233,32 @@ export default function AppShell({ title, subtitle, children }) {
   const isGuestLockedRoute = TEMPORARILY_DISABLE_GUEST_MODE ? false : !isAuthed && LOCKED_ROUTES.has(path)
 
   useEffect(() => {
+    if (!isAuthed) return undefined
+
+    let cancelled = false
+
+    async function pollBackgroundData() {
+      if (cancelled) return
+      try {
+        await Promise.all([
+          apiFetch('/api/ml/v2/watchlist/news?page_size=6&days=7'),
+          apiFetch('/api/ml/v2/watchlist/insights'),
+        ])
+      } catch {
+        // background refresh should never interrupt page UX
+      }
+    }
+
+    pollBackgroundData()
+    const intervalId = setInterval(pollBackgroundData, 15 * 60 * 1000)
+
+    return () => {
+      cancelled = true
+      clearInterval(intervalId)
+    }
+  }, [isAuthed])
+
+  useEffect(() => {
     refreshSession()
   }, [])
 

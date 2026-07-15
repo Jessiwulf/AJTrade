@@ -12,7 +12,7 @@ export default function PasswordReset() {
     e.preventDefault()
     setMsg('...')
     try {
-      const data = await apiFetch('/auth/reset-password', {
+      const data = await apiFetch('/api/auth/password-reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),

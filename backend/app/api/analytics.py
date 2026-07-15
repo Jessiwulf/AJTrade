@@ -214,13 +214,20 @@ async def get_portfolio_metrics(user=Depends(get_current_user)):
         if not owner:
             raise HTTPException(status_code=400, detail='Invalid user')
 
-        # Get portfolio
+        # Get or create portfolio
         portfolio = await db.fetch_one(
             "SELECT id FROM portfolios WHERE owner = :owner",
             {"owner": owner}
         )
         if not portfolio:
-            raise HTTPException(status_code=404, detail='Portfolio not found')
+            # Auto-create portfolio with default balance
+            portfolio = await db.fetch_one(
+                "INSERT INTO portfolios (owner, cash_balance) VALUES (:owner, 100000.00) RETURNING id",
+                {"owner": owner}
+            )
+        
+        if not portfolio:
+            raise HTTPException(status_code=500, detail='Failed to create portfolio')
 
         metrics = await calculate_portfolio_metrics(db, portfolio['id'])
         return metrics.dict()
@@ -240,12 +247,19 @@ async def get_portfolio_history(days: int = 30, user=Depends(get_current_user)):
         if not owner:
             raise HTTPException(status_code=400, detail='Invalid user')
 
+        # Get or create portfolio
         portfolio = await db.fetch_one(
             "SELECT id FROM portfolios WHERE owner = :owner",
             {"owner": owner}
         )
         if not portfolio:
-            raise HTTPException(status_code=404, detail='Portfolio not found')
+            portfolio = await db.fetch_one(
+                "INSERT INTO portfolios (owner, cash_balance) VALUES (:owner, 100000.00) RETURNING id",
+                {"owner": owner}
+            )
+        
+        if not portfolio:
+            raise HTTPException(status_code=500, detail='Failed to create portfolio')
 
         portfolio_id = portfolio['id']
 
@@ -286,12 +300,19 @@ async def get_transactions(limit: int = 100, symbol: Optional[str] = None, user=
         if not owner:
             raise HTTPException(status_code=400, detail='Invalid user')
 
+        # Get or create portfolio
         portfolio = await db.fetch_one(
             "SELECT id FROM portfolios WHERE owner = :owner",
             {"owner": owner}
         )
         if not portfolio:
-            raise HTTPException(status_code=404, detail='Portfolio not found')
+            portfolio = await db.fetch_one(
+                "INSERT INTO portfolios (owner, cash_balance) VALUES (:owner, 100000.00) RETURNING id",
+                {"owner": owner}
+            )
+        
+        if not portfolio:
+            return []  # Return empty array if portfolio creation fails
 
         portfolio_id = portfolio['id']
 
@@ -448,6 +469,8 @@ async def get_asset_detail(symbol: str, range_: str = '1mo'):
         points = []
         if isinstance(hist_data, dict):
             points = hist_data.get('points') or []
+        quote = (hist_data or {}).get('quote') if isinstance(hist_data, dict) else {}
+        quote = quote or {}
 
         closes = [point.get('close') for point in points if point.get('close') is not None]
         if len(closes) > 1:
@@ -461,13 +484,13 @@ async def get_asset_detail(symbol: str, range_: str = '1mo'):
             price=float(price),
             price_change=price_change,
             price_change_pct=price_change_pct,
-            market_cap=None,  # Optional: fetch from yfinance
-            pe_ratio=None,
-            dividend_yield=None,
-            volume=None,
-            avg_volume=None,
-            week_52_high=None,
-            week_52_low=None,
+            market_cap=str(quote.get('market_cap')) if quote.get('market_cap') is not None else None,
+            pe_ratio=float(quote.get('pe_ratio')) if quote.get('pe_ratio') is not None else None,
+            dividend_yield=float(quote.get('dividend_yield')) if quote.get('dividend_yield') is not None else None,
+            volume=int(float(quote.get('volume'))) if quote.get('volume') is not None else None,
+            avg_volume=int(float(quote.get('avg_volume'))) if quote.get('avg_volume') is not None else None,
+            week_52_high=float(quote.get('week_52_high')) if quote.get('week_52_high') is not None else None,
+            week_52_low=float(quote.get('week_52_low')) if quote.get('week_52_low') is not None else None,
             description=None,
             sentiment=sentiment.dict() if sentiment else None,
             historical_data=hist_data

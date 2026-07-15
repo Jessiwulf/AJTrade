@@ -123,6 +123,8 @@ class MarketForecaster:
             num_leaves=31,
             subsample=0.9,
             colsample_bytree=0.9,
+            min_gain_to_split=0.0,
+            verbose=-1,
             random_state=self.random_state,
         )
         model.fit(X_train, y_train)
@@ -213,9 +215,15 @@ class MarketForecaster:
         expected_value = explainer.expected_value
 
         # For binary classification, prefer class-1 contributions when available.
-        if isinstance(shap_values, list) and len(shap_values) >= 2:
-            sv = np.asarray(shap_values[1])[0]
-            base = expected_value[1] if isinstance(expected_value, (list, tuple, np.ndarray)) else expected_value
+        if isinstance(shap_values, list):
+            if len(shap_values) >= 2:
+                sv = np.asarray(shap_values[1])[0]
+                base = expected_value[1] if isinstance(expected_value, (list, tuple, np.ndarray)) else expected_value
+            elif len(shap_values) == 1:
+                sv = np.asarray(shap_values[0])[0]
+                base = expected_value[0] if isinstance(expected_value, (list, tuple, np.ndarray)) else expected_value
+            else:
+                raise MarketForecasterError('empty_shap_values')
         else:
             sv = np.asarray(shap_values)[0]
             base = expected_value[0] if isinstance(expected_value, (list, tuple, np.ndarray)) else expected_value

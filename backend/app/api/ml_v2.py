@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,6 +35,17 @@ _DUAL_LLM = DualLLMManager()
 # Key: (owner_sub, symbol)
 _FORECASTERS: Dict[Tuple[str, str], MarketForecaster] = {}
 _GUEST_ALLOWED_SYMBOLS = {'BTC', 'ETH', 'AAPL', 'MSFT', 'TSLA'}
+
+_FEATURE_LABEL_MAP = {
+    'ret_3': 'Short-term 3-day return',
+    'close': 'Current price level',
+    'ma_5': '5-day moving average',
+    'ma_10': '10-day moving average',
+    'vol_chg_1': 'Daily trading volume change',
+    'ret_1': 'Daily return',
+    'range_pct': 'Intraday price range',
+    'sentiment_score': 'News sentiment score',
+}
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -118,6 +130,58 @@ async def _get_newsapi_key_for_owner(owner: str) -> Optional[str]:
     from app.core import crypto
 
     return crypto.decrypt_api_key(row["encrypted_blob"]).decode("utf-8")
+
+
+async def _get_api_key_for_owner(owner: str, service: str) -> Optional[str]:
+    db = get_database()
+    row = await db.fetch_one(
+        query=(
+            "SELECT encrypted_blob FROM encrypted_api_keys "
+            "WHERE owner = :owner AND lower(service) = :service "
+            "ORDER BY created_at DESC LIMIT 1"
+        ),
+        values={"owner": owner, "service": str(service or '').strip().lower()},
+    )
+    if not row:
+        return None
+
+    from app.core import crypto
+
+    return crypto.decrypt_api_key(row["encrypted_blob"]).decode("utf-8")
+
+
+async def _get_news_credentials(owner: str) -> Dict[str, Optional[str]]:
+    newsapi_key = await _get_api_key_for_owner(owner, 'newsapi')
+    newsdata_key = await _get_api_key_for_owner(owner, 'newsdata')
+
+    # Environment fallbacks for non-vault deployments.
+    if not newsapi_key:
+        newsapi_key = (os.environ.get('NEWSAPI_API_KEY') or '').strip() or None
+    if not newsdata_key:
+        newsdata_key = (os.environ.get('NEWSDATA_API_KEY') or 'pub_b26c66dae79a41bb8ad13ee302ef38e0').strip() or None
+
+    # Prefer NewsAPI when available; fallback to NewsData.
+    if newsapi_key:
+        return {
+            'primary_provider': 'newsapi',
+            'primary_key': newsapi_key,
+            'fallback_provider': 'newsdata' if newsdata_key else None,
+            'fallback_key': newsdata_key,
+        }
+    if newsdata_key:
+        return {
+            'primary_provider': 'newsdata',
+            'primary_key': newsdata_key,
+            'fallback_provider': None,
+            'fallback_key': None,
+        }
+
+    return {
+        'primary_provider': None,
+        'primary_key': None,
+        'fallback_provider': None,
+        'fallback_key': None,
+    }
 
 
 async def _get_watchlist_symbols(owner: str) -> List[str]:
@@ -226,8 +290,22 @@ def _trend_outlook(price_change_pct: float, avg_sentiment: float) -> str:
     return 'Sideways until a stronger catalyst appears'
 
 
+def _humanize_feature_name(feature: str) -> str:
+    return _FEATURE_LABEL_MAP.get(str(feature or '').strip(), str(feature or '').replace('_', ' ').strip())
+
+
+def _build_natural_rationale_line(feature: Dict[str, Any]) -> str:
+    human_name = _humanize_feature_name(feature.get('feature'))
+    impact = float(feature.get('impact_pct') or 0.0)
+    direction = str(feature.get('direction') or '').lower()
+    if direction == 'positive':
+        return f"The {human_name} is supporting upside potential ({abs(impact):.1f}% impact)."
+    return f"The {human_name} is adding downside pressure ({abs(impact):.1f}% impact)."
+
+
 def _build_llm_asset_context(asset: Dict[str, Any]) -> Dict[str, Any]:
     historical_data = asset.get('historical_data') or {}
+    quote = historical_data.get('quote') or {}
     points = (historical_data.get('points') or [])[-8:]
     recent_closes = []
 
@@ -245,6 +323,8 @@ def _build_llm_asset_context(asset: Dict[str, Any]) -> Dict[str, Any]:
         'price': asset.get('price'),
         'price_change': asset.get('price_change'),
         'price_change_pct': asset.get('price_change_pct'),
+        'volume': quote.get('volume'),
+        'quote': quote,
         'sentiment': asset.get('sentiment'),
         'history_period': historical_data.get('period'),
         'recent_closes': recent_closes,
@@ -306,7 +386,7 @@ def _fallback_explanation(shap_context: Dict[str, Any], prompt: str) -> Dict[str
 
 async def _build_watch_asset_news(
     symbol: str,
-    api_key: Optional[str],
+    news_creds: Optional[Dict[str, Optional[str]]],
     *,
     days: int = 30,
     page: int = 1,
@@ -324,16 +404,24 @@ async def _build_watch_asset_news(
     raw_articles: List[Dict[str, Any]] = []
     from_dt, to_dt = _resolve_news_window(days, from_date, to_date)
 
-    if api_key:
+    primary_key = (news_creds or {}).get('primary_key') if isinstance(news_creds, dict) else None
+    primary_provider = (news_creds or {}).get('primary_provider') if isinstance(news_creds, dict) else 'newsapi'
+    fallback_key = (news_creds or {}).get('fallback_key') if isinstance(news_creds, dict) else None
+    fallback_provider = (news_creds or {}).get('fallback_provider') if isinstance(news_creds, dict) else None
+
+    if primary_key:
         raw_articles = await run_in_threadpool(
             fetch_news_for_symbol,
-            api_key,
+            primary_key,
             symbol,
             from_dt,
             to_dt,
             max(int(page_size), 1),
             max(int(page), 1),
             display_name,
+            primary_provider or 'newsapi',
+            fallback_key,
+            fallback_provider,
         )
         scored = await run_in_threadpool(
             _score_articles_finbert,
@@ -390,13 +478,55 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
     if df is None or getattr(df, 'empty', True):
         raise HTTPException(status_code=400, detail=f'no price data for {symbol}')
 
+    news_creds = await _get_news_credentials(owner)
+    primary_key = news_creds.get('primary_key')
+    primary_provider = news_creds.get('primary_provider')
+    fallback_key = news_creds.get('fallback_key')
+    fallback_provider = news_creds.get('fallback_provider')
+
     articles: List[Dict[str, Any]] = []
-    if api_key:
+    if primary_key:
         to_dt = datetime.utcnow()
         from_dt = to_dt - timedelta(days=30)
-        articles = await run_in_threadpool(fetch_news_for_symbol, api_key, symbol, from_dt, to_dt, 25)
+        articles = await run_in_threadpool(
+            fetch_news_for_symbol,
+            primary_key,
+            symbol,
+            from_dt,
+            to_dt,
+            25,
+            1,
+            asset.get('display_name') or symbol,
+            primary_provider or 'newsapi',
+            fallback_key,
+            fallback_provider,
+        )
 
     scored = await run_in_threadpool(_score_articles_finbert, _SENTIMENT_ANALYZER, articles, max_articles=25)
+
+    # If direct sentiment scoring is missing, explicitly trigger watchlist-news style pipeline
+    # so insights do not depend on market page cache/state.
+    if primary_key and not scored:
+        try:
+            fallback_news = await _build_watch_asset_news(symbol, news_creds, days=30, page=1, page_size=25)
+            fallback_scored = []
+            for article in (fallback_news.get('articles') or []):
+                published = _parse_published_date({'publishedAt': article.get('published_at')})
+                if not published:
+                    continue
+                fallback_scored.append(
+                    {
+                        'published_date': published,
+                        'score': float(article.get('sentiment_score') or 0.0),
+                        'label': article.get('sentiment_label') or 'UNSCORED',
+                    }
+                )
+            if fallback_scored:
+                scored = fallback_scored
+        except Exception:
+            # Keep neutral fallback if secondary sentiment pass also fails.
+            pass
+
     sentiment_series = await run_in_threadpool(_build_sentiment_series, df, scored)
     latest_sentiment = float(sentiment_series.iloc[-1]) if len(sentiment_series) else 0.0
 
@@ -419,8 +549,7 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
             f"News sentiment: {_sentiment_label(latest_sentiment)} ({latest_sentiment:.2f}).",
         ]
         for feature in (shap_expl.get('top_features') or [])[:3]:
-            direction = 'supports upside' if feature.get('direction') == 'positive' else 'adds downside risk'
-            rationale.append(f"{feature.get('feature')}: {direction} ({feature.get('impact_pct', 0):.1f}% impact).")
+            rationale.append(_build_natural_rationale_line(feature))
     except Exception:
         price_change_pct = float(asset.get('price_change_pct') or 0.0)
         outlook = _trend_outlook(price_change_pct, latest_sentiment)
@@ -520,7 +649,8 @@ async def v2_forecaster_train(req: TrainV2Request, user=Depends(get_current_user
     if not owner:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    api_key = await _get_newsapi_key_for_owner(owner)
+    news_creds = await _get_news_credentials(owner)
+    api_key = news_creds.get('primary_key')
     used_newsapi = bool(api_key)
 
     to_dt = datetime.utcnow()
@@ -530,7 +660,19 @@ async def v2_forecaster_train(req: TrainV2Request, user=Depends(get_current_user
         # Fetching can block (network + yfinance); use threadpool.
         articles = []
         if api_key:
-            articles = await run_in_threadpool(fetch_news_for_symbol, api_key, symbol, from_dt, to_dt)
+            articles = await run_in_threadpool(
+                fetch_news_for_symbol,
+                api_key,
+                symbol,
+                from_dt,
+                to_dt,
+                100,
+                1,
+                symbol,
+                news_creds.get('primary_provider') or 'newsapi',
+                news_creds.get('fallback_key'),
+                news_creds.get('fallback_provider'),
+            )
         df = await run_in_threadpool(fetch_ohlcv, symbol, f"{int(req.lookback_days)}d", "1d")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"data_fetch_failed: {e}")
@@ -591,7 +733,8 @@ async def v2_forecaster_signal(req: SignalV2Request, user=Depends(get_current_us
     forecaster = _get_forecaster(owner, symbol)
 
     # Best-effort: sentiment uses NewsAPI if available, otherwise defaults to 0.
-    api_key = await _get_newsapi_key_for_owner(owner)
+    news_creds = await _get_news_credentials(owner)
+    api_key = news_creds.get('primary_key')
 
     try:
         df = await run_in_threadpool(fetch_ohlcv, symbol, req.period, "1d")
@@ -607,7 +750,19 @@ async def v2_forecaster_signal(req: SignalV2Request, user=Depends(get_current_us
             # pull recent news (last 7 days) to keep runtime bounded
             to_dt = datetime.utcnow()
             from_dt = to_dt - timedelta(days=7)
-            articles = await run_in_threadpool(fetch_news_for_symbol, api_key, symbol, from_dt, to_dt)
+            articles = await run_in_threadpool(
+                fetch_news_for_symbol,
+                api_key,
+                symbol,
+                from_dt,
+                to_dt,
+                100,
+                1,
+                symbol,
+                news_creds.get('primary_provider') or 'newsapi',
+                news_creds.get('fallback_key'),
+                news_creds.get('fallback_provider'),
+            )
             scored = await run_in_threadpool(
                 _score_articles_finbert,
                 _SENTIMENT_ANALYZER,
@@ -653,7 +808,8 @@ async def v2_forecaster_shap(req: SignalV2Request, user=Depends(get_current_user
 
     forecaster = _get_forecaster(owner, symbol)
 
-    api_key = await _get_newsapi_key_for_owner(owner)
+    news_creds = await _get_news_credentials(owner)
+    api_key = news_creds.get('primary_key')
 
     try:
         df = await run_in_threadpool(fetch_ohlcv, symbol, req.period, "1d")
@@ -668,7 +824,19 @@ async def v2_forecaster_shap(req: SignalV2Request, user=Depends(get_current_user
         try:
             to_dt = datetime.utcnow()
             from_dt = to_dt - timedelta(days=7)
-            articles = await run_in_threadpool(fetch_news_for_symbol, api_key, symbol, from_dt, to_dt)
+            articles = await run_in_threadpool(
+                fetch_news_for_symbol,
+                api_key,
+                symbol,
+                from_dt,
+                to_dt,
+                100,
+                1,
+                symbol,
+                news_creds.get('primary_provider') or 'newsapi',
+                news_creds.get('fallback_key'),
+                news_creds.get('fallback_provider'),
+            )
             scored = await run_in_threadpool(
                 _score_articles_finbert,
                 _SENTIMENT_ANALYZER,
@@ -779,14 +947,14 @@ async def watchlist_news(
     if not symbols:
         return []
 
-    api_key = await _get_newsapi_key_for_owner(owner)
+    news_creds = await _get_news_credentials(owner)
     payload = []
     for symbol in symbols:
         try:
             payload.append(
                 await _build_watch_asset_news(
                     symbol,
-                    api_key,
+                    news_creds,
                     days=days,
                     page=1,
                     page_size=page_size,
@@ -834,10 +1002,10 @@ async def watch_asset_news(
     if normalized_symbol not in symbols:
         raise HTTPException(status_code=403, detail='symbol_not_in_watchlist')
 
-    api_key = await _get_newsapi_key_for_owner(owner)
+    news_creds = await _get_news_credentials(owner)
     return await _build_watch_asset_news(
         normalized_symbol,
-        api_key,
+        news_creds,
         days=days,
         page=page,
         page_size=page_size,
@@ -895,6 +1063,22 @@ async def watchlist_assistant_explain(req: WatchlistAssistantRequest, user=Depen
 
         asset = await get_asset_detail(symbol, req.range)
         shap_context = _build_llm_asset_context(asset)
+        api_key = await _get_newsapi_key_for_owner(owner)
+        try:
+            insight = await _build_watch_asset_insight(symbol, owner, api_key)
+            shap_context.update(
+                {
+                    'signal': insight.get('signal'),
+                    'recommendation': insight.get('recommendation'),
+                    'latest_sentiment_score': insight.get('latest_sentiment_score'),
+                    'probability_up': insight.get('probability_up'),
+                    'latest_price': insight.get('latest_price'),
+                    'price_change_pct': insight.get('price_change_pct'),
+                }
+            )
+        except Exception:
+            # Keep a best-effort context using market metrics even if insight generation fails.
+            pass
         pref = (req.user_preference or '').strip().lower()
         user_pref = 'custom' if pref == 'custom' else 'open-source'
         try:

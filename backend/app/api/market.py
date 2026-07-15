@@ -48,6 +48,48 @@ def _epoch_to_iso(ts: int) -> str:
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
 
 
+def _fetch_yahoo_fundamentals(symbol: str) -> dict:
+    url = f'https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}'
+    params = {
+        'modules': 'price,summaryDetail,defaultKeyStatistics',
+    }
+    headers = {
+        'accept': 'application/json,text/plain,*/*',
+        'accept-language': 'en-US,en;q=0.9',
+        'user-agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/126.0.0.0 Safari/537.36'
+        ),
+    }
+
+    def _raw_or_none(node):
+        if isinstance(node, dict):
+            raw = node.get('raw')
+            return raw if raw is not None else node.get('fmt')
+        return node
+
+    with httpx.Client(timeout=15.0, headers=headers, follow_redirects=True) as client:
+        response = client.get(url, params=params)
+        response.raise_for_status()
+        payload = response.json() or {}
+
+    result = (((payload.get('quoteSummary') or {}).get('result') or [None])[0]) or {}
+    price = result.get('price') or {}
+    summary = result.get('summaryDetail') or {}
+    stats = result.get('defaultKeyStatistics') or {}
+
+    return {
+        'market_cap': _raw_or_none(price.get('marketCap')),
+        'volume': _raw_or_none(summary.get('volume')),
+        'avg_volume': _raw_or_none(summary.get('averageVolume')),
+        'pe_ratio': _raw_or_none(summary.get('trailingPE')) or _raw_or_none(stats.get('trailingPE')),
+        'dividend_yield': _raw_or_none(summary.get('dividendYield')),
+        'week_52_high': _raw_or_none(summary.get('fiftyTwoWeekHigh')),
+        'week_52_low': _raw_or_none(summary.get('fiftyTwoWeekLow')),
+    }
+
+
 def _fetch_yahoo_chart(symbol: str, range_name: str) -> dict:
     period, interval = _RANGE_MAP[range_name]
     url = f'https://query1.finance.yahoo.com/v8/finance/chart/{symbol}'
@@ -85,6 +127,11 @@ def _fetch_yahoo_chart(symbol: str, range_name: str) -> dict:
     quotes = indicators.get('quote') or [{}]
     quote = quotes[0] or {}
     meta = result.get('meta') or {}
+    fundamentals = {}
+    try:
+        fundamentals = _fetch_yahoo_fundamentals(symbol)
+    except Exception:
+        fundamentals = {}
 
     points = []
     for idx, ts in enumerate(timestamps):
@@ -123,11 +170,17 @@ def _fetch_yahoo_chart(symbol: str, range_name: str) -> dict:
             'change': float(change) if change is not None else None,
             'change_percent': float(change_pct) if change_pct is not None else None,
             'currency': meta.get('currency'),
-            'market_cap': meta.get('marketCap'),
+            'market_cap': fundamentals.get('market_cap') or meta.get('marketCap'),
             'short_name': meta.get('shortName'),
             'long_name': meta.get('longName'),
             'display_name': meta.get('shortName') or meta.get('longName') or symbol,
             'exchange_name': meta.get('exchangeName'),
+            'volume': fundamentals.get('volume') or meta.get('regularMarketVolume'),
+            'avg_volume': fundamentals.get('avg_volume') or meta.get('averageDailyVolume3Month'),
+            'pe_ratio': fundamentals.get('pe_ratio') or meta.get('trailingPE'),
+            'dividend_yield': fundamentals.get('dividend_yield'),
+            'week_52_high': fundamentals.get('week_52_high') or meta.get('fiftyTwoWeekHigh'),
+            'week_52_low': fundamentals.get('week_52_low') or meta.get('fiftyTwoWeekLow'),
         },
     }
 
@@ -282,6 +335,12 @@ def _fetch_history(symbol: str, range_name: str) -> dict:
                 ) or (
                     info.get('longName') if isinstance(info, dict) else None
                 ) or symbol,
+                'volume': info.get('regularMarketVolume') if isinstance(info, dict) else None,
+                'avg_volume': info.get('averageVolume') if isinstance(info, dict) else None,
+                'pe_ratio': info.get('trailingPE') if isinstance(info, dict) else None,
+                'dividend_yield': info.get('dividendYield') if isinstance(info, dict) else None,
+                'week_52_high': info.get('fiftyTwoWeekHigh') if isinstance(info, dict) else None,
+                'week_52_low': info.get('fiftyTwoWeekLow') if isinstance(info, dict) else None,
             },
         }
 

@@ -24,6 +24,77 @@ def _build_news_query(symbol: str, company_name: Optional[str]) -> str:
     return normalized_symbol
 
 
+def _fetch_newsapi_articles(
+    api_key: str,
+    q: str,
+    from_dt: datetime,
+    to_dt: datetime,
+    page_size: int,
+    page: int,
+) -> List[Dict[str, Any]]:
+    response = httpx.get(
+        'https://newsapi.org/v2/everything',
+        params={
+            'q': q,
+            'from': from_dt.isoformat(),
+            'to': to_dt.isoformat(),
+            'language': 'en',
+            'pageSize': page_size,
+            'page': max(int(page or 1), 1),
+            'sortBy': 'publishedAt',
+            'searchIn': 'title,description',
+            'apiKey': api_key,
+        },
+        timeout=20.0,
+    )
+    response.raise_for_status()
+    res = response.json()
+    return res.get('articles', []) if isinstance(res, dict) else []
+
+
+def _fetch_newsdata_articles(
+    api_key: str,
+    q: str,
+    from_dt: datetime,
+    to_dt: datetime,
+    page_size: int,
+    page: int,
+) -> List[Dict[str, Any]]:
+    # NewsData free tier doesn't support date filtering - use only basic params
+    params = {
+        'apikey': api_key,
+        'q': q,
+        'language': 'en',
+        'size': min(max(int(page_size or 1), 1), 10),  # Free tier max is 10
+    }
+    
+    response = httpx.get(
+        'https://newsdata.io/api/1/latest',
+        params=params,
+        timeout=20.0,
+    )
+    response.raise_for_status()
+    res = response.json()
+    results = res.get('results', []) if isinstance(res, dict) else []
+
+    normalized = []
+    for article in results:
+        normalized.append(
+            {
+                'title': article.get('title') or 'Untitled article',
+                'description': article.get('description') or article.get('content') or '',
+                'content': article.get('content') or '',
+                'url': article.get('link'),
+                'publishedAt': article.get('pubDate'),
+                'source': {
+                    'name': article.get('source_name') or article.get('source_id') or 'Unknown source',
+                },
+            }
+        )
+
+    return normalized
+
+
 def fetch_news_for_symbol(
     api_key: str,
     symbol: str,
@@ -32,6 +103,9 @@ def fetch_news_for_symbol(
     page_size: int = 100,
     page: int = 1,
     company_name: Optional[str] = None,
+    provider: str = 'newsapi',
+    fallback_api_key: Optional[str] = None,
+    fallback_provider: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if to_dt is None:
         to_dt = datetime.utcnow()
@@ -39,28 +113,23 @@ def fetch_news_for_symbol(
         from_dt = to_dt - timedelta(days=7)
     q = _build_news_query(symbol, company_name)
     articles = []
+
+    def _fetch(provider_name: str, key_value: str) -> List[Dict[str, Any]]:
+        normalized_provider = str(provider_name or '').strip().lower()
+        if normalized_provider == 'newsdata':
+            return _fetch_newsdata_articles(key_value, q, from_dt, to_dt, page_size, page)
+        return _fetch_newsapi_articles(key_value, q, from_dt, to_dt, page_size, page)
+
     try:
-        response = httpx.get(
-            'https://newsapi.org/v2/everything',
-            params={
-                'q': q,
-                'from': from_dt.isoformat(),
-                'to': to_dt.isoformat(),
-                'language': 'en',
-                'pageSize': page_size,
-                'page': max(int(page or 1), 1),
-                'sortBy': 'publishedAt',
-                'searchIn': 'title,description',
-                'apiKey': api_key,
-            },
-            timeout=20.0,
-        )
-        response.raise_for_status()
-        res = response.json()
-        articles = res.get('articles', []) if isinstance(res, dict) else []
+        articles = _fetch(provider, api_key)
     except Exception:
-        # best-effort: return empty list on failure
         articles = []
+
+    if not articles and fallback_api_key:
+        try:
+            articles = _fetch(fallback_provider or 'newsdata', fallback_api_key)
+        except Exception:
+            articles = []
 
     deduped_articles: List[Dict[str, Any]] = []
     seen = set()

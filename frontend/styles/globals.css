@@ -77,3 +77,24 @@ button:disabled {
   outline: 3px solid var(--aj-focus);
   outline-offset: 2px;
 }
+
+/* Utility classes used across Market/Insights for explicit sentiment styling */
+.text-xs {
+  font-size: 12px;
+}
+
+.text-gray-500 {
+  color: #6b7280;
+}
+
+.text-green-600 {
+  color: #16a34a;
+}
+
+.text-red-600 {
+  color: #dc2626;
+}
+
+.font-bold {
+  font-weight: 700;
+}

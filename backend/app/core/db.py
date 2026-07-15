@@ -86,8 +86,10 @@ def get_database() -> databases.Database:
     global database
     if database is None:
         _validate_database_url(DATABASE_URL)
+        # Keep pool size below Supabase's default session-mode limit (15).
+        pool_kwargs = {"min_size": 1, "max_size": 10}
         if _needs_ssl(DATABASE_URL):
-            database = databases.Database(DATABASE_URL, ssl=_ssl_context_for(DATABASE_URL))
+            database = databases.Database(DATABASE_URL, ssl=_ssl_context_for(DATABASE_URL), **pool_kwargs)
         else:
-            database = databases.Database(DATABASE_URL)
+            database = databases.Database(DATABASE_URL, **pool_kwargs)
     return database

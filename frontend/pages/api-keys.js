@@ -17,6 +17,7 @@ function formatDate(value) {
 export default function ApiKeysPage() {
   const [keys, setKeys] = useState([])
   const [newsApiKey, setNewsApiKey] = useState('')
+  const [newsDataApiKey, setNewsDataApiKey] = useState('')
   const [alpacaKeyId, setAlpacaKeyId] = useState('')
   const [alpacaSecretKey, setAlpacaSecretKey] = useState('')
   const [settradeAppId, setSettradeAppId] = useState('')
@@ -76,6 +77,44 @@ export default function ApiKeysPage() {
       setMessage('NewsAPI: OK')
     } catch (e) {
       setMessage(`Error: NewsAPI: ${e.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function saveNewsDataApiKey() {
+    const k = newsDataApiKey.trim()
+    if (!k) return
+    setLoading(true)
+    setMessage(null)
+    try {
+      await apiFetch('/api/vault/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'newsdata', api_key: k }),
+      })
+      setNewsDataApiKey('')
+      await refresh()
+      setMessage('NewsData key saved')
+    } catch (e) {
+      setMessage(`Error: ${e.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function testNewsDataApiKey() {
+    setLoading(true)
+    setMessage(null)
+    try {
+      await apiFetch('/api/vault/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'newsdata' }),
+      })
+      setMessage('NewsData: OK')
+    } catch (e) {
+      setMessage(`Error: NewsData: ${e.message}`)
     } finally {
       setLoading(false)
     }
@@ -224,6 +263,39 @@ export default function ApiKeysPage() {
                 type="button"
                 className={styles.secondary}
                 onClick={testNewsApiKey}
+                disabled={loading}
+              >
+                Test
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className={styles.card} aria-label="NewsData key">
+          <p className={styles.cardTitle}>NewsData.io (Fallback)</p>
+          <div className={styles.field}>
+            <div className={styles.label}>API key</div>
+            <div className={styles.rowWrap}>
+              <input
+                className={styles.input}
+                type="password"
+                value={newsDataApiKey}
+                onChange={(e) => setNewsDataApiKey(e.target.value)}
+                placeholder="Paste NewsData API key"
+                aria-label="NewsData API key"
+              />
+              <button
+                type="button"
+                className={styles.primary}
+                onClick={saveNewsDataApiKey}
+                disabled={loading || !newsDataApiKey.trim()}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className={styles.secondary}
+                onClick={testNewsDataApiKey}
                 disabled={loading}
               >
                 Test

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, status, Request, Response, Depends
 from pydantic import BaseModel, EmailStr
 
@@ -6,6 +8,7 @@ from app.core import supabase_auth
 from app.core.db import get_database
 
 router = APIRouter()
+logger = logging.getLogger("ajtrade.auth")
 
 
 class SignUpPayload(BaseModel):
@@ -117,8 +120,8 @@ async def reset_password_request(payload: EmailPayload):
     # Anti-enumeration: always return HTTP 200, regardless of account existence.
     try:
         supabase_auth.send_password_reset(payload.email)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Password reset email request failed: %s", e)
     return {'message': 'If this email is registered, a reset link has been sent.'}
 
 

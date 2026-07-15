@@ -23,6 +23,20 @@ function formatPrice(value) {
   })
 }
 
+function sentimentClassName(label) {
+  const v = String(label || '').trim().toLowerCase()
+  if (v === 'positive' || v === 'bullish' || v === 'strong bullish') return 'text-green-600 font-bold'
+  if (v === 'negative' || v === 'bearish' || v === 'strong bearish') return 'text-red-600 font-bold'
+  if (v === 'neutral') return 'text-gray-500 font-bold'
+  return 'text-gray-500 font-bold'
+}
+
+function sentimentScoreText(score) {
+  const n = Number(score)
+  if (Number.isNaN(n)) return '0.0'
+  return (n * 100).toFixed(1)
+}
+
 export default function MarketsPage() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
@@ -223,12 +237,18 @@ export default function MarketsPage() {
               <div className={styles.assetTitleBlock}>
                 <h2 className={styles.symbol}>{item.symbol}</h2>
                 <p className={styles.meta}>
-                  {item.display_name || item.symbol} · {item.sentiment_label} · {item.articles_count} articles
+                  {item.display_name || item.symbol} · <span className={sentimentClassName(item.sentiment_label)}>{item.sentiment_label}</span> · {item.articles_count} articles
                 </p>
               </div>
               <div className={styles.priceBlock}>
-                <strong>{item.price ? formatPrice(item.price) : '—'}</strong>
-                <span className={item.price_change_pct >= 0 ? styles.pos : styles.neg}>{item.price_change_pct?.toFixed(2)}%</span>
+                <div>
+                  <span className="text-xs text-gray-500">Live Price:</span>{' '}
+                  <strong>{item.price ? formatPrice(item.price) : '—'}</strong>
+                </div>
+                <div>
+                  <span className="text-xs text-gray-500">Daily Change:</span>{' '}
+                  <span className={item.price_change_pct >= 0 ? styles.pos : styles.neg}>{item.price_change_pct?.toFixed(2)}%</span>
+                </div>
               </div>
             </header>
 
@@ -237,7 +257,7 @@ export default function MarketsPage() {
                 {item.articles.map((article, index) => (
                   <article key={`${item.symbol}-${index}`} className={styles.articleCard}>
                     <p className={styles.articleMeta}>
-                      {article.source} · {article.sentiment_label} · {formatPublishedAt(article.published_at)}
+                      {article.source} · <span className={sentimentClassName(article.sentiment_label)}>{article.sentiment_label} (Score: {sentimentScoreText(article.sentiment_score)})</span> · {formatPublishedAt(article.published_at)}
                     </p>
                     <h3 className={styles.articleTitle}>{article.title}</h3>
                     <p className={styles.articleExcerpt}>{article.excerpt || 'No summary available.'}</p>

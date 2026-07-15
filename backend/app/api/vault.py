@@ -68,6 +68,7 @@ async def ping_key(payload: PingIn, user=Depends(get_current_user)):
 
     Supported services:
     - newsapi
+    - newsdata
     - alpaca (requires alpaca_key_id + alpaca_secret_key to be stored)
     """
     import os
@@ -120,6 +121,33 @@ async def ping_key(payload: PingIn, user=Depends(get_current_user)):
 
         return {"status": "ok", "service": "newsapi"}
 
+    if service == 'newsdata':
+        api_key = await _get_service_key('newsdata')
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(
+                    'https://newsdata.io/api/1/latest',
+                    params={
+                        'apikey': api_key,
+                        'q': 'market',
+                        'language': 'en',
+                        'size': 1,
+                    },
+                )
+            data = r.json() if r.content else {}
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"NewsData ping failed: {e}")
+
+        if r.status_code != 200 or (isinstance(data, dict) and data.get('status') in ('error', 'failed')):
+            msg = None
+            if isinstance(data, dict):
+                msg = data.get('results') or data.get('message') or data.get('status')
+                if isinstance(msg, list):
+                    msg = 'Invalid NewsData key'
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg or 'NewsData key invalid')
+
+        return {'status': 'ok', 'service': 'newsdata'}
+
     if service == 'alpaca':
         key_id = await _get_service_key('alpaca_key_id')
         secret_key = await _get_service_key('alpaca_secret_key')
@@ -169,7 +197,7 @@ async def ping_key(payload: PingIn, user=Depends(get_current_user)):
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail='Ping not supported for this service (supported: newsapi, alpaca)',
+        detail='Ping not supported for this service (supported: newsapi, newsdata, alpaca)',
     )
 
 

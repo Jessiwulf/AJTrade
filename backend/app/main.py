@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv, find_dotenv
 from fastapi import FastAPI
@@ -13,7 +14,31 @@ from app.api import auth as auth_router
 
 logger = logging.getLogger("ajtrade")
 
-app = FastAPI(title="AJTrade API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Don't hard-fail startup if DB isn't available (so auth still works).
+    try:
+        from app.core.db import get_database
+
+        db = get_database()
+        await db.connect()
+    except Exception as e:
+        logger.warning("DB connect skipped/failed: %s", e)
+
+    try:
+        yield
+    finally:
+        try:
+            from app.core.db import get_database
+
+            db = get_database()
+            await db.disconnect()
+        except Exception:
+            return
+
+
+app = FastAPI(title="AJTrade API", lifespan=lifespan)
 
 # CORS: default to allowing localhost on any port for development.
 # Override via:
@@ -114,24 +139,3 @@ except Exception as e:
     logger.warning("Analytics seeder not loaded: %s", e)
 
 
-@app.on_event('startup')
-async def startup():
-    # Don't hard-fail startup if DB isn't available (so auth still works).
-    try:
-        from app.core.db import get_database
-
-        db = get_database()
-        await db.connect()
-    except Exception as e:
-        logger.warning("DB connect skipped/failed: %s", e)
-
-
-@app.on_event('shutdown')
-async def shutdown():
-    try:
-        from app.core.db import get_database
-
-        db = get_database()
-        await db.disconnect()
-    except Exception:
-        return

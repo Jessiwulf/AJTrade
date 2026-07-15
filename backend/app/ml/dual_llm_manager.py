@@ -58,6 +58,7 @@ class DualLLMManager:
             "=== 2. ZERO HALLUCINATION (CRITICAL) ===\n"
             "- Treat ticker symbols (e.g., 'USA', 'BTC', 'AAPL') purely as symbols. NEVER invent corporate backgrounds, country descriptions, or assume you know what the asset does.\n"
             "- NEVER invent prices, dates, calculations, or market events. Use ONLY the exact numbers provided in the BACKGROUND_DATA.\n"
+            "- You MUST use the exact injected metrics for Live Price, Daily Change, Volume, FinBERT Sentiment Score, and LightGBM Signal when answering asset questions.\n"
             "- Do not give guaranteed financial advice.\n\n"
             "=== 3. STRICT FORMATTING ===\n"
             "- ALWAYS use double newlines (\\n\\n) to separate paragraphs.\n"
@@ -67,6 +68,47 @@ class DualLLMManager:
             "- If the user says 'Hello' or asks a general question ('1+1', 'What is AI?'), just answer naturally and concisely. Ignore the BACKGROUND_DATA entirely.\n"
             "- Only use the BACKGROUND_DATA if the user specifically asks about the asset's prediction, trend, or risks. Explain it simply without technical jargon."
         )
+
+    @staticmethod
+    def _extract_realtime_metrics(shap_context: Dict[str, Any]) -> Dict[str, Any]:
+        sentiment_obj = shap_context.get('sentiment') if isinstance(shap_context.get('sentiment'), dict) else {}
+        quote_obj = shap_context.get('quote') if isinstance(shap_context.get('quote'), dict) else {}
+
+        live_price = (
+            shap_context.get('price')
+            or shap_context.get('latest_price')
+            or quote_obj.get('price')
+            or shap_context.get('latest_quote')
+        )
+        daily_change_pct = (
+            shap_context.get('price_change_pct')
+            or quote_obj.get('change_percent')
+            or shap_context.get('daily_change_pct')
+        )
+        volume = (
+            shap_context.get('volume')
+            or quote_obj.get('volume')
+            or shap_context.get('latest_volume')
+        )
+        finbert_score = (
+            shap_context.get('latest_sentiment_score')
+            or sentiment_obj.get('avg_sentiment')
+            or shap_context.get('sentiment_score')
+        )
+        lightgbm_signal = (
+            shap_context.get('signal')
+            or shap_context.get('recommendation')
+            or shap_context.get('outlook')
+            or 'Not provided'
+        )
+
+        return {
+            'live_price': live_price,
+            'daily_change_pct': daily_change_pct,
+            'volume': volume,
+            'finbert_sentiment_score': finbert_score,
+            'lightgbm_signal': lightgbm_signal,
+        }
 
     async def _ollama_generate(self, *, model: str, system: str, prompt: str) -> str:
         payload = {
@@ -112,16 +154,15 @@ class DualLLMManager:
         except Exception as e:
             raise DualLLMManagerError("shap_context is not JSON-serializable") from e
 
-        signal_value = str(
-            shap_context.get("signal")
-            or shap_context.get("recommendation")
-            or shap_context.get("outlook")
-            or "Not provided"
-        )
+        metrics = self._extract_realtime_metrics(shap_context)
 
         user_prompt = (
             "--- BACKGROUND_DATA (Use this ONLY if the user's message is about analyzing the asset or signal) ---\n"
-            f"Signal: {signal_value}\n"
+            f"Live Price: {metrics.get('live_price')}\n"
+            f"Daily Change (%): {metrics.get('daily_change_pct')}\n"
+            f"Volume: {metrics.get('volume')}\n"
+            f"FinBERT Sentiment Score: {metrics.get('finbert_sentiment_score')}\n"
+            f"LightGBM Signal: {metrics.get('lightgbm_signal')}\n"
             f"SHAP Values: {shap_json}\n"
             "--------------------------------------------------\n\n"
             f"USER_MESSAGE:\n{user_message}"

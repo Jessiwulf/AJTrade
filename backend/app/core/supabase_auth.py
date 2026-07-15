@@ -23,6 +23,12 @@ def _get_supabase_anon_key() -> str:
     return key
 
 
+def _get_frontend_url() -> str:
+    """Get frontend URL for password reset redirects, defaults to localhost:3000"""
+    url = os.environ.get("FRONTEND_URL", "http://localhost:3000").strip()
+    return url[:-1] if url.endswith('/') else url
+
+
 def _jwks_url() -> str:
     base = _get_supabase_url()
     return f"{base}/auth/v1/.well-known/jwks.json"
@@ -83,8 +89,10 @@ def sign_in(email: str, password: str) -> Dict[str, Any]:
 
 
 def send_password_reset(email: str) -> Dict[str, Any]:
+    """Send password reset email via Supabase recover endpoint with redirect to reset page."""
     base = _get_supabase_url()
     anon_key = _get_supabase_anon_key()
+    frontend_url = _get_frontend_url()
     url = f"{base}/auth/v1/recover"
     headers = {
         "apikey": anon_key,
@@ -92,7 +100,9 @@ def send_password_reset(email: str) -> Dict[str, Any]:
         "Content-Type": "application/json",
     }
     payload = {"email": email}
-    r = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+    # Include redirectTo as query parameter for Supabase to redirect after email verification
+    redirect_to = f"{frontend_url}/auth/reset"
+    r = httpx.post(url, json=payload, params={"redirect_to": redirect_to}, headers=headers, timeout=10.0)
     r.raise_for_status()
     return r.json()
 

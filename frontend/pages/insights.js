@@ -4,6 +4,14 @@ import AppShell from '../components/AppShell'
 import { apiFetch } from '../lib/api'
 import styles from '../styles/Insights.module.css'
 
+function sentimentClassName(label) {
+  const v = String(label || '').trim().toLowerCase()
+  if (v === 'positive' || v === 'bullish' || v === 'strong bullish') return 'text-green-600 font-bold'
+  if (v === 'negative' || v === 'bearish' || v === 'strong bearish') return 'text-red-600 font-bold'
+  if (v === 'neutral') return 'text-gray-500 font-bold'
+  return 'text-gray-500 font-bold'
+}
+
 export default function Insights() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
@@ -51,7 +59,7 @@ export default function Insights() {
               <div className={styles.meta}>
                 <div>
                   <p className={styles.label}>AI Recommendation</p>
-                  <p className={`${styles.reco} ${a.signal === 'BUY' ? styles.recoStrongBuy : a.signal === 'SELL' ? styles.recoSell : styles.recoHold}`}>{a.recommendation}</p>
+                  <p className={`${styles.reco} ${sentimentClassName(a.recommendation)}`}>{a.recommendation}</p>
                 </div>
 
                 <div>
@@ -71,7 +79,7 @@ export default function Insights() {
                 <p className={styles.confidence}>{a.confidence}%</p>
               </div>
               <div className={styles.sideStats}>
-                <span>Signal: {a.signal}</span>
+                <span>Signal: <span className={sentimentClassName(a.recommendation)}>{a.signal}</span></span>
                 <span>Up Probability: {(Number(a.probability_up || 0) * 100).toFixed(0)}%</span>
               </div>
               <Link href="/automated" className={styles.primary}>
