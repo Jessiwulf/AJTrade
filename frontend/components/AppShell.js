@@ -50,6 +50,18 @@ const NAV_ITEMS = [
     ),
   },
   {
+    href: '/ai-performance',
+    label: 'AI Performance',
+    icon: (
+      <NavIcon>
+        <path d="M4 19V5" />
+        <path d="M10 19V9" />
+        <path d="M16 19V12" />
+        <path d="M22 19V7" />
+      </NavIcon>
+    ),
+  },
+  {
     href: '/markets',
     label: 'Markets',
     icon: (
@@ -146,6 +158,7 @@ const TEMPORARILY_DISABLE_GUEST_MODE = !GUEST_LOCK_ENABLED
 
 const LOCKED_ROUTES = new Set([
   '/analytics',
+  '/ai-performance',
   '/automated',
   '/insights',
   '/markets',

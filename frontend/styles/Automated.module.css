@@ -1,8 +1,13 @@
 .layout {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   gap: 16px;
   align-items: start;
+}
+
+.mainGrid {
+  display: grid;
+  gap: 16px;
 }
 
 .stepCard {
@@ -37,6 +42,21 @@
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.rowBetween {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fieldGrid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .field {
@@ -123,13 +143,96 @@
 }
 
 .toggleRow {
-  margin-top: 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.togglePanel {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--aj-border);
+  border-radius: 14px;
+  padding: 10px;
+  background: var(--aj-surface);
+}
+
+.summaryStatus {
+  margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--aj-border);
+  color: var(--aj-text-muted);
+  font-size: 12px;
+}
+
+.tabRow {
+  display: flex;
+  gap: 8px;
+}
+
+.tabBtn {
+  border: 1px solid var(--aj-border);
+  border-radius: 999px;
+  background: var(--aj-surface);
+  color: var(--aj-text-muted);
+  font-weight: 800;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.tabBtnActive {
+  color: var(--aj-indigo);
+  border-color: var(--aj-accent-border);
+  background: var(--aj-accent-soft);
+}
+
+.tableWrap {
+  margin-top: 10px;
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--aj-border);
+  padding: 10px;
+  text-align: left;
+  color: var(--aj-text);
+  font-size: 13px;
+}
+
+.table th {
+  color: var(--aj-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+
+.table tbody tr:hover {
+  background: var(--aj-hover-soft);
+}
+
+.emptyText {
+  margin: 10px 2px 0;
+  color: var(--aj-text-muted);
+  font-size: 12px;
+}
+
+.pos {
+  color: var(--aj-positive) !important;
+  font-weight: 800;
+}
+
+.neg {
+  color: var(--aj-negative) !important;
+  font-weight: 800;
 }
 
 .switch {
@@ -164,6 +267,10 @@
 
 @media (max-width: 1100px) {
   .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .fieldGrid {
     grid-template-columns: 1fr;
   }
 }

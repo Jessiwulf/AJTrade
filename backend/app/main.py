@@ -27,8 +27,22 @@ async def lifespan(app: FastAPI):
         logger.warning("DB connect skipped/failed: %s", e)
 
     try:
+        from app.core.scheduler import start_scheduler
+
+        start_scheduler()
+    except Exception as e:
+        logger.warning("Scheduler start skipped/failed: %s", e)
+
+    try:
         yield
     finally:
+        try:
+            from app.core.scheduler import stop_scheduler
+
+            stop_scheduler()
+        except Exception:
+            pass
+
         try:
             from app.core.db import get_database
 
@@ -129,6 +143,27 @@ try:
     app.include_router(analytics_router.router, prefix='/api/analytics')
 except Exception as e:
     logger.warning("Analytics router not loaded: %s", e)
+
+try:
+    from app.api import ai_performance as ai_performance_router
+
+    app.include_router(ai_performance_router.router, prefix='/api/ai-performance')
+except Exception as e:
+    logger.warning("AI performance router not loaded: %s", e)
+
+try:
+    from app.api import admin as admin_router
+
+    app.include_router(admin_router.router, prefix='/api/admin')
+except Exception as e:
+    logger.warning("Admin router not loaded: %s", e)
+
+try:
+    from app.api import trading_bot as trading_bot_router
+
+    app.include_router(trading_bot_router.router, prefix='/api/bot')
+except Exception as e:
+    logger.warning("Trading bot router not loaded: %s", e)
 
 
 try:

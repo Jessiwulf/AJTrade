@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import useSWR from 'swr'
 import Link from 'next/link'
 import AppShell from '../components/AppShell'
 import { apiFetch } from '../lib/api'
@@ -39,8 +40,6 @@ function sentimentScoreText(score) {
 
 export default function MarketsPage() {
   const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [lookbackDays, setLookbackDays] = useState(7)
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
@@ -79,25 +78,18 @@ export default function MarketsPage() {
     applyPreset(7)
   }
 
+  const newsQuery = useMemo(() => buildNewsQuery({ pageSize: 6 }), [lookbackDays, fromDate, toDate])
+  const newsKey = `/api/ml/v2/watchlist/news?${newsQuery}`
+  const { data: newsData, error, isLoading, mutate } = useSWR(newsKey)
+
   useEffect(() => {
-    let cancelled = false
-
-    async function loadNews() {
-      setLoading(true)
-      setError('')
-      try {
-        const data = await apiFetch(`/api/ml/v2/watchlist/news?${buildNewsQuery({ pageSize: 6 })}`)
-        if (!cancelled) setItems(Array.isArray(data) ? data : [])
-      } catch (e) {
-        if (!cancelled) setError(e.message || 'Unable to load market news.')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
+    if (Array.isArray(newsData)) {
+      setItems(newsData)
     }
+  }, [newsData])
 
-    loadNews()
-    return () => { cancelled = true }
-  }, [lookbackDays, fromDate, toDate])
+  const loading = isLoading && !items.length
+  const errorMessage = error?.message || ''
 
   async function loadOlderNews(symbol) {
     const current = items.find((item) => item.symbol === symbol)
@@ -114,15 +106,19 @@ export default function MarketsPage() {
           pageSize: current.page_size || 6,
         })}`
       )
-      setItems((state) => state.map((item) => {
-        if (item.symbol !== symbol) return item
-        return {
-          ...item,
-          ...data,
-          articles: [...(item.articles || []), ...(data.articles || [])],
-          articles_count: (item.articles || []).length + (data.articles || []).length,
-        }
-      }))
+      setItems((state) => {
+        const updated = state.map((item) => {
+          if (item.symbol !== symbol) return item
+          return {
+            ...item,
+            ...data,
+            articles: [...(item.articles || []), ...(data.articles || [])],
+            articles_count: (item.articles || []).length + (data.articles || []).length,
+          }
+        })
+        mutate(updated, false)
+        return updated
+      })
     } catch (e) {
       setAssetErrors((state) => ({
         ...state,
@@ -147,7 +143,11 @@ export default function MarketsPage() {
           pageSize: current.page_size || 6,
         })}`
       )
-      setItems((state) => state.map((item) => (item.symbol === symbol ? data : item)))
+      setItems((state) => {
+        const updated = state.map((item) => (item.symbol === symbol ? data : item))
+        mutate(updated, false)
+        return updated
+      })
     } catch (e) {
       setAssetErrors((state) => ({
         ...state,
@@ -224,8 +224,8 @@ export default function MarketsPage() {
         </section>
 
         {loading ? <section className={styles.emptyState}>Loading watchlist news...</section> : null}
-        {!loading && error ? <section className={styles.emptyState}>Error: {error}</section> : null}
-        {!loading && !error && !items.length ? (
+        {!loading && errorMessage ? <section className={styles.emptyState}>Error: {errorMessage}</section> : null}
+        {!loading && !errorMessage && !items.length ? (
           <section className={styles.emptyState}>
             No watchlist assets found. Add assets on <Link href="/watchlist">Watchlist</Link>. To populate live articles, save a NewsAPI key on <Link href="/api-keys">API Management</Link>.
           </section>

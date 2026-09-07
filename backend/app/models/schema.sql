@@ -60,3 +60,103 @@ CREATE TABLE trade_logs (
   status text NOT NULL,
   created_at timestamptz DEFAULT now()
 );
+
+CREATE TABLE news_cache (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner uuid REFERENCES profiles ON DELETE CASCADE,
+  symbol text NOT NULL,
+  cache_key text NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  UNIQUE(owner, symbol, cache_key)
+);
+
+CREATE TABLE insights (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner uuid REFERENCES profiles ON DELETE CASCADE,
+  symbol text NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  UNIQUE(owner, symbol)
+);
+
+CREATE TABLE alert_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid REFERENCES profiles ON DELETE CASCADE,
+  alert_type text NOT NULL,
+  message text NOT NULL,
+  status text NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE trading_rules (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid REFERENCES profiles ON DELETE CASCADE,
+  asset_symbol text NOT NULL,
+  strategy text NOT NULL DEFAULT 'Trend Following',
+  is_active boolean NOT NULL DEFAULT false,
+  mode text NOT NULL DEFAULT 'paper' CHECK (mode IN ('paper', 'live')),
+  stop_loss_pct numeric(8,4) NOT NULL DEFAULT 2.0,
+  trailing_stop_pct numeric(8,4) NOT NULL DEFAULT 1.2,
+  take_profit_pct numeric(8,4) NOT NULL DEFAULT 5.0,
+  max_capital numeric(18,2) NOT NULL DEFAULT 1000.00,
+  max_daily_loss numeric(18,2) NOT NULL DEFAULT 500.00,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  UNIQUE(owner_id, asset_symbol)
+);
+
+CREATE TABLE bot_execution_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid REFERENCES profiles ON DELETE CASCADE,
+  timestamp timestamptz NOT NULL DEFAULT now(),
+  asset_symbol text NOT NULL,
+  signal_received text NOT NULL,
+  action_taken text NOT NULL CHECK (action_taken IN ('Executed', 'Rejected')),
+  execution_price numeric(18,6),
+  reject_reason text
+);
+
+CREATE TABLE finbert_telemetry_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid REFERENCES profiles ON DELETE CASCADE,
+  provider text NOT NULL DEFAULT 'newsapi',
+  article_count int NOT NULL DEFAULT 0,
+  positive_count int NOT NULL DEFAULT 0,
+  neutral_count int NOT NULL DEFAULT 0,
+  negative_count int NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE forecaster_telemetry_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid REFERENCES profiles ON DELETE CASCADE,
+  asset_symbol text NOT NULL,
+  raw_forecast_score numeric(12,6) NOT NULL DEFAULT 0,
+  bull_threshold numeric(12,6) NOT NULL DEFAULT 0.2,
+  bear_threshold numeric(12,6) NOT NULL DEFAULT -0.2,
+  treeshap_log text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE llm_telemetry_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid REFERENCES profiles ON DELETE CASCADE,
+  asset_symbol text,
+  prompt text NOT NULL,
+  model_used text NOT NULL DEFAULT 'unknown',
+  latency_ms numeric(18,4) NOT NULL DEFAULT 0,
+  prompt_tokens int NOT NULL DEFAULT 0,
+  completion_tokens int NOT NULL DEFAULT 0,
+  total_tokens int NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_trading_rules_owner_asset ON trading_rules(owner_id, asset_symbol);
+CREATE INDEX idx_bot_logs_owner_time ON bot_execution_logs(owner_id, timestamp DESC);
+CREATE INDEX idx_bot_logs_owner_asset_time ON bot_execution_logs(owner_id, asset_symbol, timestamp DESC);
+CREATE INDEX idx_finbert_telemetry_owner_time ON finbert_telemetry_events(owner_id, created_at DESC);
+CREATE INDEX idx_forecaster_telemetry_owner_time ON forecaster_telemetry_events(owner_id, created_at DESC);
+CREATE INDEX idx_llm_telemetry_owner_time ON llm_telemetry_events(owner_id, created_at DESC);

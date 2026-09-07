@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
+import useSWR from 'swr'
 import Link from 'next/link'
 import AppShell from '../components/AppShell'
-import { apiFetch } from '../lib/api'
 import styles from '../styles/Insights.module.css'
 
 function sentimentClassName(label) {
@@ -13,29 +12,10 @@ function sentimentClassName(label) {
 }
 
 export default function Insights() {
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadInsights() {
-      setLoading(true)
-      setError('')
-      try {
-        const data = await apiFetch('/api/ml/v2/watchlist/insights')
-        if (!cancelled) setItems(Array.isArray(data) ? data : [])
-      } catch (e) {
-        if (!cancelled) setError(e.message || 'Unable to load insights.')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-
-    loadInsights()
-    return () => { cancelled = true }
-  }, [])
+  const { data, error, isLoading } = useSWR('/api/ml/v2/watchlist/insights')
+  const items = Array.isArray(data) ? data : []
+  const loading = isLoading && !items.length
+  const errorMessage = error?.message || ''
 
   return (
     <AppShell
@@ -44,8 +24,8 @@ export default function Insights() {
     >
       <div className={styles.list}>
         {loading ? <section className={styles.emptyState}>Loading live watchlist insights...</section> : null}
-        {!loading && error ? <section className={styles.emptyState}>Error: {error}</section> : null}
-        {!loading && !error && !items.length ? (
+        {!loading && errorMessage ? <section className={styles.emptyState}>Error: {errorMessage}</section> : null}
+        {!loading && !errorMessage && !items.length ? (
           <section className={styles.emptyState}>
             No watchlist insights available yet. Add assets on <Link href="/watchlist">Watchlist</Link> and optionally save a NewsAPI key on <Link href="/api-keys">API Management</Link>.
           </section>

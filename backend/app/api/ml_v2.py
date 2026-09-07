@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+import json
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -19,6 +21,12 @@ from app.ml.news_sentiment_analyzer import NewsSentimentAnalyzer, NewsSentimentA
 from app.ml.market_forecaster import MarketForecaster, MarketForecasterError
 from app.ml.trading_bot import AutomatedTradingBot, RiskParameterViolation
 from app.ml.dual_llm_manager import DualLLMManager, DualLLMManagerError
+from app.api.ai_performance import (
+    _estimate_tokens,
+    record_finbert_batch,
+    record_forecaster_event,
+    record_llm_prompt,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -47,9 +55,210 @@ _FEATURE_LABEL_MAP = {
     'sentiment_score': 'News sentiment score',
 }
 
+NEWS_CACHE_TTL_MINUTES = 60
+INSIGHTS_CACHE_TTL_MINUTES = 15
+
 
 def _normalize_symbol(symbol: str) -> str:
     return (symbol or "").strip().upper()
+
+
+def _utcnow() -> datetime:
+    return datetime.utcnow()
+
+
+def _is_fresh(updated_at: Optional[datetime], ttl_minutes: int) -> bool:
+    if updated_at is None:
+        return False
+    now = datetime.now(updated_at.tzinfo) if updated_at.tzinfo is not None else _utcnow()
+    return (now - updated_at) <= timedelta(minutes=int(ttl_minutes))
+
+
+def _to_json_payload(value: Dict[str, Any]) -> str:
+    return json.dumps(value, separators=(",", ":"), default=str)
+
+
+def _from_json_payload(raw_value: Any) -> Optional[Dict[str, Any]]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, dict):
+        return raw_value
+    try:
+        if isinstance(raw_value, str):
+            loaded = json.loads(raw_value)
+            return loaded if isinstance(loaded, dict) else None
+    except Exception:
+        return None
+    return None
+
+
+def _build_news_cache_key(symbol: str, *, days: int, page: int, page_size: int, from_date: Optional[str], to_date: Optional[str]) -> str:
+    return "|".join(
+        [
+            _normalize_symbol(symbol),
+            str(int(days)),
+            str(int(page)),
+            str(int(page_size)),
+            str(from_date or ''),
+            str(to_date or ''),
+        ]
+    )
+
+
+async def _read_news_cache(
+    db,
+    *,
+    owner: str,
+    symbol: str,
+    days: int,
+    page: int,
+    page_size: int,
+    from_date: Optional[str],
+    to_date: Optional[str],
+    ttl_minutes: int = NEWS_CACHE_TTL_MINUTES,
+) -> Optional[Dict[str, Any]]:
+    cache_key = _build_news_cache_key(
+        symbol,
+        days=days,
+        page=page,
+        page_size=page_size,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    try:
+        row = await db.fetch_one(
+            query=(
+                "SELECT payload, updated_at FROM news_cache "
+                "WHERE owner = :owner AND symbol = :symbol AND cache_key = :cache_key "
+                "LIMIT 1"
+            ),
+            values={
+                'owner': owner,
+                'symbol': _normalize_symbol(symbol),
+                'cache_key': cache_key,
+            },
+        )
+        if not row:
+            return None
+        updated_at = row['updated_at'] if 'updated_at' in row else None
+        if not _is_fresh(updated_at, ttl_minutes):
+            return None
+        return _from_json_payload(row['payload'])
+    except Exception:
+        return None
+
+
+async def _write_news_cache(
+    db,
+    *,
+    owner: str,
+    symbol: str,
+    days: int,
+    page: int,
+    page_size: int,
+    from_date: Optional[str],
+    to_date: Optional[str],
+    payload: Dict[str, Any],
+) -> None:
+    cache_key = _build_news_cache_key(
+        symbol,
+        days=days,
+        page=page,
+        page_size=page_size,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    try:
+        await db.execute(
+            query=(
+                "INSERT INTO news_cache (owner, symbol, cache_key, payload, updated_at) "
+                "VALUES (:owner, :symbol, :cache_key, CAST(:payload AS jsonb), now()) "
+                "ON CONFLICT (owner, symbol, cache_key) DO UPDATE SET "
+                "payload = EXCLUDED.payload, updated_at = now()"
+            ),
+            values={
+                'owner': owner,
+                'symbol': _normalize_symbol(symbol),
+                'cache_key': cache_key,
+                'payload': _to_json_payload(payload),
+            },
+        )
+    except Exception as e:
+        logger.debug('news_cache_write_failed owner=%s symbol=%s error=%s', owner, symbol, e)
+
+
+async def _read_latest_news_cache_for_symbol(
+    db,
+    *,
+    owner: str,
+    symbol: str,
+    ttl_minutes: int = NEWS_CACHE_TTL_MINUTES,
+) -> Optional[Dict[str, Any]]:
+    try:
+        row = await db.fetch_one(
+            query=(
+                "SELECT payload, updated_at FROM news_cache "
+                "WHERE owner = :owner AND symbol = :symbol "
+                "ORDER BY updated_at DESC LIMIT 1"
+            ),
+            values={
+                'owner': owner,
+                'symbol': _normalize_symbol(symbol),
+            },
+        )
+        if not row:
+            return None
+        updated_at = row['updated_at'] if 'updated_at' in row else None
+        if not _is_fresh(updated_at, ttl_minutes):
+            return None
+        return _from_json_payload(row['payload'])
+    except Exception:
+        return None
+
+
+async def _read_insight_cache(
+    db,
+    *,
+    owner: str,
+    symbol: str,
+    ttl_minutes: int = INSIGHTS_CACHE_TTL_MINUTES,
+) -> Optional[Dict[str, Any]]:
+    try:
+        row = await db.fetch_one(
+            query=(
+                "SELECT payload, updated_at FROM insights "
+                "WHERE owner = :owner AND symbol = :symbol "
+                "LIMIT 1"
+            ),
+            values={'owner': owner, 'symbol': _normalize_symbol(symbol)},
+        )
+        if not row:
+            return None
+        updated_at = row['updated_at'] if 'updated_at' in row else None
+        if not _is_fresh(updated_at, ttl_minutes):
+            return None
+        return _from_json_payload(row['payload'])
+    except Exception:
+        return None
+
+
+async def _write_insight_cache(db, *, owner: str, symbol: str, payload: Dict[str, Any]) -> None:
+    try:
+        await db.execute(
+            query=(
+                "INSERT INTO insights (owner, symbol, payload, updated_at) "
+                "VALUES (:owner, :symbol, CAST(:payload AS jsonb), now()) "
+                "ON CONFLICT (owner, symbol) DO UPDATE SET "
+                "payload = EXCLUDED.payload, updated_at = now()"
+            ),
+            values={
+                'owner': owner,
+                'symbol': _normalize_symbol(symbol),
+                'payload': _to_json_payload(payload),
+            },
+        )
+    except Exception as e:
+        logger.debug('insight_cache_write_failed owner=%s symbol=%s error=%s', owner, symbol, e)
 
 
 def _article_text(article: Dict[str, Any]) -> str:
@@ -62,6 +271,17 @@ def _article_excerpt(article: Dict[str, Any]) -> str:
     if len(text) > 220:
         return f"{text[:217].rstrip()}..."
     return text
+
+
+def _article_thumbnail_url(article: Dict[str, Any]) -> Optional[str]:
+    image = article.get('urlToImage')
+    if image:
+        return str(image)
+    if article.get('image_url'):
+        return str(article.get('image_url'))
+    if article.get('image'):
+        return str(article.get('image'))
+    return None
 
 
 def _asset_display_name(asset: Dict[str, Any], symbol: str) -> str:
@@ -87,6 +307,32 @@ def _parse_published_date(article: Dict[str, Any]) -> Optional[pd.Timestamp]:
         return ts.tz_convert(None).normalize()
     except Exception:
         return None
+
+
+def _scored_items_from_cached_news_payload(cached_news_payload: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(cached_news_payload, dict):
+        return []
+
+    scored_items: List[Dict[str, Any]] = []
+    for article in (cached_news_payload.get('articles') or []):
+        if not isinstance(article, dict):
+            continue
+        published = _parse_published_date({'publishedAt': article.get('published_at')})
+        if published is None:
+            continue
+        try:
+            score = float(article.get('sentiment_score'))
+        except Exception:
+            continue
+
+        scored_items.append(
+            {
+                'published_date': published,
+                'score': score,
+                'label': article.get('sentiment_label') or 'UNSCORED',
+            }
+        )
+    return scored_items
 
 
 def _resolve_news_window(days: int, from_date: Optional[str], to_date: Optional[str]) -> Tuple[datetime, datetime]:
@@ -388,6 +634,7 @@ async def _build_watch_asset_news(
     symbol: str,
     news_creds: Optional[Dict[str, Optional[str]]],
     *,
+    owner: Optional[str] = None,
     days: int = 30,
     page: int = 1,
     page_size: int = 6,
@@ -433,6 +680,9 @@ async def _build_watch_asset_news(
     avg_sentiment = float(sum(item['score'] for item in scored) / len(scored)) if scored else 0.0
     normalized_page_size = max(int(page_size), 1)
 
+    if scored and owner:
+        record_finbert_batch(owner=owner, scored_items=scored, provider=primary_provider or 'newsapi')
+
     articles = []
     for index, article in enumerate(raw_articles[:normalized_page_size]):
         scored_item = scored[index] if index < len(scored) else None
@@ -442,6 +692,7 @@ async def _build_watch_asset_news(
                 'source': (article.get('source') or {}).get('name') or 'Unknown source',
                 'url': article.get('url'),
                 'published_at': article.get('publishedAt'),
+                'thumbnail': _article_thumbnail_url(article),
                 'excerpt': _article_excerpt(article),
                 'sentiment_label': scored_item.get('label') if scored_item else 'UNSCORED',
                 'sentiment_score': float(scored_item.get('score', 0.0)) if scored_item else 0.0,
@@ -478,6 +729,7 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
     if df is None or getattr(df, 'empty', True):
         raise HTTPException(status_code=400, detail=f'no price data for {symbol}')
 
+    db = get_database()
     news_creds = await _get_news_credentials(owner)
     primary_key = news_creds.get('primary_key')
     primary_provider = news_creds.get('primary_provider')
@@ -504,31 +756,43 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
 
     scored = await run_in_threadpool(_score_articles_finbert, _SENTIMENT_ANALYZER, articles, max_articles=25)
 
+    cached_news_payload = await _read_latest_news_cache_for_symbol(
+        db,
+        owner=owner,
+        symbol=symbol,
+        ttl_minutes=NEWS_CACHE_TTL_MINUTES,
+    )
+    cached_avg_sentiment = 0.0
+    try:
+        if cached_news_payload is not None:
+            cached_avg_sentiment = float(cached_news_payload.get('avg_sentiment') or 0.0)
+    except Exception:
+        cached_avg_sentiment = 0.0
+
+    if not scored and cached_news_payload:
+        scored = _scored_items_from_cached_news_payload(cached_news_payload)
+
     # If direct sentiment scoring is missing, explicitly trigger watchlist-news style pipeline
     # so insights do not depend on market page cache/state.
     if primary_key and not scored:
         try:
-            fallback_news = await _build_watch_asset_news(symbol, news_creds, days=30, page=1, page_size=25)
-            fallback_scored = []
-            for article in (fallback_news.get('articles') or []):
-                published = _parse_published_date({'publishedAt': article.get('published_at')})
-                if not published:
-                    continue
-                fallback_scored.append(
-                    {
-                        'published_date': published,
-                        'score': float(article.get('sentiment_score') or 0.0),
-                        'label': article.get('sentiment_label') or 'UNSCORED',
-                    }
-                )
+            fallback_news = await _build_watch_asset_news(symbol, news_creds, owner=owner, days=30, page=1, page_size=25)
+            fallback_scored = _scored_items_from_cached_news_payload(fallback_news)
             if fallback_scored:
                 scored = fallback_scored
+                try:
+                    cached_avg_sentiment = float(fallback_news.get('avg_sentiment') or cached_avg_sentiment)
+                except Exception:
+                    pass
         except Exception:
             # Keep neutral fallback if secondary sentiment pass also fails.
             pass
 
     sentiment_series = await run_in_threadpool(_build_sentiment_series, df, scored)
-    latest_sentiment = float(sentiment_series.iloc[-1]) if len(sentiment_series) else 0.0
+    latest_sentiment = float(sentiment_series.iloc[-1]) if len(sentiment_series) else float(cached_avg_sentiment)
+
+    if len(sentiment_series) and not scored and cached_avg_sentiment:
+        sentiment_series = pd.Series([float(cached_avg_sentiment)] * len(sentiment_series), index=sentiment_series.index)
 
     signal = 'HOLD'
     probability_up = 0.5
@@ -687,6 +951,8 @@ async def v2_forecaster_train(req: TrainV2Request, user=Depends(get_current_user
             articles,
             max_articles=int(req.max_articles),
         )
+        if scored:
+            record_finbert_batch(owner=owner, scored_items=scored, provider=news_creds.get('primary_provider') or 'newsapi')
         sentiment_series = await run_in_threadpool(_build_sentiment_series, df, scored)
 
         forecaster = MarketForecaster()
@@ -769,6 +1035,8 @@ async def v2_forecaster_signal(req: SignalV2Request, user=Depends(get_current_us
                 articles,
                 max_articles=int(req.max_articles),
             )
+            if scored:
+                record_finbert_batch(owner=owner, scored_items=scored, provider=news_creds.get('primary_provider') or 'newsapi')
         except Exception as e:
             logger.warning("News sentiment fetch/score failed; proceeding with neutral sentiment. Error=%s", e)
             scored = []
@@ -784,6 +1052,15 @@ async def v2_forecaster_signal(req: SignalV2Request, user=Depends(get_current_us
         # Uses the forecaster's internal model.
         X_row = forecaster._to_feature_row(df2)  # type: ignore[attr-defined]
         prob_up = float(forecaster.model.predict_proba(X_row)[0, 1])  # type: ignore[union-attr]
+        raw_score = (prob_up * 2.0) - 1.0
+        record_forecaster_event(
+            owner,
+            symbol=symbol,
+            raw_forecast_score=raw_score,
+            bull_threshold=0.2,
+            bear_threshold=-0.2,
+            shap_snippet=f"Signal={signal}; ProbUp={prob_up:.4f}; Sentiment={float(sentiment_series.iloc[-1]) if len(sentiment_series) else 0.0:.3f}",
+        )
 
         return {
             "symbol": symbol,
@@ -843,6 +1120,8 @@ async def v2_forecaster_shap(req: SignalV2Request, user=Depends(get_current_user
                 articles,
                 max_articles=int(req.max_articles),
             )
+            if scored:
+                record_finbert_batch(owner=owner, scored_items=scored, provider=news_creds.get('primary_provider') or 'newsapi')
         except Exception as e:
             logger.warning("News sentiment fetch/score failed; proceeding with neutral sentiment. Error=%s", e)
             scored = []
@@ -854,6 +1133,23 @@ async def v2_forecaster_shap(req: SignalV2Request, user=Depends(get_current_user
     try:
         signal = await run_in_threadpool(forecaster.generate_signal, df2)
         shap_expl = await run_in_threadpool(forecaster.get_shap_explanation, df2)
+        top_features = (shap_expl or {}).get('top_features') or []
+        snippet = ' | '.join(
+            [
+                f"{feat.get('feature')}={feat.get('impact_pct')}%"
+                for feat in top_features[:3]
+            ]
+        ) if top_features else f"Signal={signal}"
+        X_row = forecaster._to_feature_row(df2)  # type: ignore[attr-defined]
+        prob_up = float(forecaster.model.predict_proba(X_row)[0, 1])  # type: ignore[union-attr]
+        record_forecaster_event(
+            owner,
+            symbol=symbol,
+            raw_forecast_score=(prob_up * 2.0) - 1.0,
+            bull_threshold=0.2,
+            bear_threshold=-0.2,
+            shap_snippet=snippet,
+        )
         return {
             "symbol": symbol,
             "signal": signal,
@@ -874,8 +1170,22 @@ async def v2_llm_explain(req: ExplainLLMRequest, user=Depends(get_current_user))
     pref = (req.user_preference or "").strip().lower()
     user_pref = "custom" if pref == "custom" else "open-source"
 
+    owner = user.get('sub') or 'unknown'
+    started = time.perf_counter()
+
     try:
         explanation = await _DUAL_LLM.generate_explanation(user_pref, req.shap_context, req.prompt)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        tokens = _estimate_tokens(req.prompt, explanation)
+        record_llm_prompt(
+            owner,
+            symbol=str(req.shap_context.get('symbol') or '-'),
+            prompt=req.prompt,
+            model_used=_DUAL_LLM.last_model_used,
+            latency_ms=latency_ms,
+            prompt_tokens=tokens['prompt_tokens'],
+            completion_tokens=tokens['completion_tokens'],
+        )
         return {
             'model_used': _DUAL_LLM.last_model_used,
             'used_fallback': _DUAL_LLM.last_used_fallback,
@@ -947,21 +1257,48 @@ async def watchlist_news(
     if not symbols:
         return []
 
+    db = get_database()
     news_creds = await _get_news_credentials(owner)
     payload = []
     for symbol in symbols:
         try:
-            payload.append(
-                await _build_watch_asset_news(
-                    symbol,
-                    news_creds,
-                    days=days,
-                    page=1,
-                    page_size=page_size,
-                    from_date=from_date,
-                    to_date=to_date,
-                )
+            cached = await _read_news_cache(
+                db,
+                owner=owner,
+                symbol=symbol,
+                days=days,
+                page=1,
+                page_size=page_size,
+                from_date=from_date,
+                to_date=to_date,
+                ttl_minutes=NEWS_CACHE_TTL_MINUTES,
             )
+            if cached:
+                payload.append(cached)
+                continue
+
+            fresh = await _build_watch_asset_news(
+                symbol,
+                news_creds,
+                owner=owner,
+                days=days,
+                page=1,
+                page_size=page_size,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            await _write_news_cache(
+                db,
+                owner=owner,
+                symbol=symbol,
+                days=days,
+                page=1,
+                page_size=page_size,
+                from_date=from_date,
+                to_date=to_date,
+                payload=fresh,
+            )
+            payload.append(fresh)
         except Exception as e:
             logger.warning('watchlist_news_failed symbol=%s error=%s', symbol, e)
             payload.append({
@@ -1002,16 +1339,44 @@ async def watch_asset_news(
     if normalized_symbol not in symbols:
         raise HTTPException(status_code=403, detail='symbol_not_in_watchlist')
 
+    db = get_database()
+    cached = await _read_news_cache(
+        db,
+        owner=owner,
+        symbol=normalized_symbol,
+        days=days,
+        page=page,
+        page_size=page_size,
+        from_date=from_date,
+        to_date=to_date,
+        ttl_minutes=NEWS_CACHE_TTL_MINUTES,
+    )
+    if cached:
+        return cached
+
     news_creds = await _get_news_credentials(owner)
-    return await _build_watch_asset_news(
+    fresh = await _build_watch_asset_news(
         normalized_symbol,
         news_creds,
+        owner=owner,
         days=days,
         page=page,
         page_size=page_size,
         from_date=from_date,
         to_date=to_date,
     )
+    await _write_news_cache(
+        db,
+        owner=owner,
+        symbol=normalized_symbol,
+        days=days,
+        page=page,
+        page_size=page_size,
+        from_date=from_date,
+        to_date=to_date,
+        payload=fresh,
+    )
+    return fresh
 
 
 @router.get('/watchlist/insights')
@@ -1024,11 +1389,24 @@ async def watchlist_insights(user=Depends(get_current_user)):
     if not symbols:
         return []
 
+    db = get_database()
     api_key = await _get_newsapi_key_for_owner(owner)
     payload = []
     for symbol in symbols:
         try:
-            payload.append(await _build_watch_asset_insight(symbol, owner, api_key))
+            cached = await _read_insight_cache(
+                db,
+                owner=owner,
+                symbol=symbol,
+                ttl_minutes=INSIGHTS_CACHE_TTL_MINUTES,
+            )
+            if cached:
+                payload.append(cached)
+                continue
+
+            fresh = await _build_watch_asset_insight(symbol, owner, api_key)
+            await _write_insight_cache(db, owner=owner, symbol=symbol, payload=fresh)
+            payload.append(fresh)
         except Exception as e:
             logger.warning('watchlist_insight_failed symbol=%s error=%s', symbol, e)
             payload.append({
@@ -1045,6 +1423,108 @@ async def watchlist_insights(user=Depends(get_current_user)):
                 'rationale': ['Price history could not be loaded for this symbol yet.'],
             })
     return payload
+
+
+async def refresh_watchlist_cache_for_owner(
+    owner: str,
+    *,
+    news_ttl_minutes: int = NEWS_CACHE_TTL_MINUTES,
+    insights_ttl_minutes: int = INSIGHTS_CACHE_TTL_MINUTES,
+    alert_callback: Optional[Callable[[str, str, str, Dict[str, Any]], Any]] = None,
+) -> Dict[str, Any]:
+    """Refresh cached watchlist news/insights for an owner, and emit alerts on strong BUY/SELL signals."""
+    symbols = await _get_watchlist_symbols(owner)
+    if not symbols:
+        return {'owner': owner, 'symbols': 0, 'news_refreshed': 0, 'insights_refreshed': 0, 'alerts': []}
+
+    db = get_database()
+    news_creds = await _get_news_credentials(owner)
+    api_key = await _get_newsapi_key_for_owner(owner)
+
+    news_refreshed = 0
+    insights_refreshed = 0
+    alerts: List[Dict[str, Any]] = []
+
+    for symbol in symbols:
+        try:
+            cached_news = await _read_news_cache(
+                db,
+                owner=owner,
+                symbol=symbol,
+                days=7,
+                page=1,
+                page_size=6,
+                from_date=None,
+                to_date=None,
+                ttl_minutes=news_ttl_minutes,
+            )
+            if not cached_news:
+                news_payload = await _build_watch_asset_news(
+                    symbol,
+                    news_creds,
+                    owner=owner,
+                    days=7,
+                    page=1,
+                    page_size=6,
+                    from_date=None,
+                    to_date=None,
+                )
+                await _write_news_cache(
+                    db,
+                    owner=owner,
+                    symbol=symbol,
+                    days=7,
+                    page=1,
+                    page_size=6,
+                    from_date=None,
+                    to_date=None,
+                    payload=news_payload,
+                )
+                news_refreshed += 1
+        except Exception as e:
+            logger.warning('background_news_refresh_failed owner=%s symbol=%s error=%s', owner, symbol, e)
+
+        try:
+            cached_insight = await _read_insight_cache(
+                db,
+                owner=owner,
+                symbol=symbol,
+                ttl_minutes=insights_ttl_minutes,
+            )
+            if cached_insight:
+                insight_payload = cached_insight
+            else:
+                insight_payload = await _build_watch_asset_insight(symbol, owner, api_key)
+                await _write_insight_cache(db, owner=owner, symbol=symbol, payload=insight_payload)
+                insights_refreshed += 1
+
+            signal = str(insight_payload.get('signal') or '').upper()
+            confidence = int(insight_payload.get('confidence') or 0)
+            if signal in {'BUY', 'SELL'} and confidence >= 70:
+                alert_payload = {
+                    'owner': owner,
+                    'symbol': symbol,
+                    'signal': signal,
+                    'confidence': confidence,
+                    'probability_up': insight_payload.get('probability_up'),
+                    'latest_price': insight_payload.get('latest_price'),
+                    'trend_summary': insight_payload.get('trend_summary'),
+                }
+                alerts.append(alert_payload)
+                if alert_callback is not None:
+                    result = alert_callback(owner, symbol, signal, alert_payload)
+                    if hasattr(result, '__await__'):
+                        await result
+        except Exception as e:
+            logger.warning('background_insight_refresh_failed owner=%s symbol=%s error=%s', owner, symbol, e)
+
+    return {
+        'owner': owner,
+        'symbols': len(symbols),
+        'news_refreshed': news_refreshed,
+        'insights_refreshed': insights_refreshed,
+        'alerts': alerts,
+    }
 
 
 @router.post('/assistant/explain')
@@ -1081,8 +1561,20 @@ async def watchlist_assistant_explain(req: WatchlistAssistantRequest, user=Depen
             pass
         pref = (req.user_preference or '').strip().lower()
         user_pref = 'custom' if pref == 'custom' else 'open-source'
+        started = time.perf_counter()
         try:
             explanation = await _DUAL_LLM.generate_explanation(user_pref, shap_context, req.prompt)
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            tokens = _estimate_tokens(req.prompt, explanation)
+            record_llm_prompt(
+                owner,
+                symbol=symbol,
+                prompt=req.prompt,
+                model_used=_DUAL_LLM.last_model_used,
+                latency_ms=latency_ms,
+                prompt_tokens=tokens['prompt_tokens'],
+                completion_tokens=tokens['completion_tokens'],
+            )
             return {
                 'model_used': _DUAL_LLM.last_model_used,
                 'used_fallback': _DUAL_LLM.last_used_fallback,

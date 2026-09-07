@@ -400,6 +400,80 @@ def _fetch_quotes(symbols: List[str]) -> List[dict]:
     return out
 
 
+def _none_if_nan(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
+def _fetch_asset_statistics(symbol: str) -> dict:
+    import yfinance as yf
+
+    normalized = _normalize_symbol(symbol)
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid symbol')
+
+    ticker = yf.Ticker(normalized)
+    info = ticker.info or {}
+
+    previous_close = _none_if_nan(info.get('previousClose'))
+    open_price = _none_if_nan(info.get('open'))
+    day_low = _none_if_nan(info.get('dayLow'))
+    day_high = _none_if_nan(info.get('dayHigh'))
+    week_low = _none_if_nan(info.get('fiftyTwoWeekLow'))
+    week_high = _none_if_nan(info.get('fiftyTwoWeekHigh'))
+
+    revenue = _none_if_nan(info.get('totalRevenue'))
+    net_income = _none_if_nan(info.get('netIncomeToCommon'))
+    eps = _none_if_nan(info.get('trailingEps'))
+    pe_ratio = _none_if_nan(info.get('trailingPE'))
+    beta = _none_if_nan(info.get('beta'))
+
+    latest_price = _none_if_nan(info.get('currentPrice'))
+    if latest_price is None:
+        chart = _fetch_yahoo_chart_with_variants(normalized, 'day')
+        quote = chart.get('quote') or {}
+        latest_price = _none_if_nan(quote.get('price'))
+        previous_close = previous_close if previous_close is not None else _none_if_nan(quote.get('previous_close'))
+
+        if day_low is None or day_high is None:
+            points = chart.get('points') or []
+            lows = [p.get('low') for p in points if p.get('low') is not None]
+            highs = [p.get('high') for p in points if p.get('high') is not None]
+            if day_low is None and lows:
+                day_low = float(min(lows))
+            if day_high is None and highs:
+                day_high = float(max(highs))
+
+        if week_low is None or week_high is None:
+            quote = chart.get('quote') or {}
+            week_low = week_low if week_low is not None else _none_if_nan(quote.get('week_52_low'))
+            week_high = week_high if week_high is not None else _none_if_nan(quote.get('week_52_high'))
+
+    return {
+        'symbol': normalized,
+        'currency': info.get('currency'),
+        'latest_price': latest_price,
+        'previous_close': previous_close,
+        'open': open_price,
+        'day_low': day_low,
+        'day_high': day_high,
+        'week_52_low': week_low,
+        'week_52_high': week_high,
+        'volume': _none_if_nan(info.get('volume')),
+        'market_cap': _none_if_nan(info.get('marketCap')),
+        'revenue': revenue,
+        'net_income': net_income,
+        'eps': eps,
+        'pe_ratio': pe_ratio,
+        'beta': beta,
+    }
+
+
 @router.get('/quotes')
 async def get_quotes(symbols: str = Query(default='')):
     parsed = [_normalize_symbol(s) for s in symbols.split(',') if _normalize_symbol(s)]
@@ -407,6 +481,19 @@ async def get_quotes(symbols: str = Query(default='')):
         return []
     try:
         return await run_in_threadpool(_fetch_quotes, parsed)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get('/stats/{symbol}')
+async def get_asset_statistics(symbol: str):
+    normalized = _normalize_symbol(symbol)
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid symbol')
+    try:
+        return await run_in_threadpool(_fetch_asset_statistics, normalized)
     except HTTPException:
         raise
     except Exception as exc:
