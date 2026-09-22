@@ -296,6 +296,35 @@ async def get_finbert_monitor(user=Depends(get_current_user)):
     cached_articles = int((cache_row['cached_articles'] if cache_row else 0) or 0)
     total_articles = max(total_articles, cached_articles)
 
+    if total_articles > 0 and (positive + neutral + negative) == 0:
+        cache_rows = await db.fetch_all(
+            query=(
+                "SELECT payload FROM news_cache WHERE owner = :owner "
+                "ORDER BY updated_at DESC LIMIT 200"
+            ),
+            values={'owner': owner},
+        )
+        for row in cache_rows:
+            payload = row['payload'] if row and 'payload' in row else None
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = None
+            if not isinstance(payload, dict):
+                continue
+            for article in payload.get('articles') or []:
+                if not isinstance(article, dict):
+                    continue
+                label = str(article.get('sentiment_label') or '').strip().lower()
+                score = float(article.get('sentiment_score') or 0.0)
+                if label == 'positive' or score > 0.1:
+                    positive += 1
+                elif label == 'negative' or score < -0.1:
+                    negative += 1
+                else:
+                    neutral += 1
+
     updated_at_value = telemetry_row['updated_at'] if telemetry_row and 'updated_at' in telemetry_row else None
     updated_at_epoch = updated_at_value.timestamp() if updated_at_value else None
     newsapi_limit = 1000
@@ -356,6 +385,38 @@ async def get_forecaster_monitor(user=Depends(get_current_user)):
         }
         for row in rows
     ]
+
+    if not logs:
+        insight_rows = await db.fetch_all(
+            query=(
+                "SELECT symbol, payload, updated_at FROM insights "
+                "WHERE owner = :owner ORDER BY updated_at DESC LIMIT 30"
+            ),
+            values={'owner': owner},
+        )
+        for row in insight_rows:
+            payload = row['payload'] if row and 'payload' in row else None
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = None
+            if not isinstance(payload, dict):
+                continue
+
+            probability_up = float(payload.get('probability_up') or 0.5)
+            latest_sentiment = float(payload.get('latest_sentiment_score') or 0.0)
+            signal = str(payload.get('signal') or 'HOLD').upper()
+            logs.append(
+                {
+                    'timestamp': row['updated_at'].timestamp() if row and 'updated_at' in row and row['updated_at'] else None,
+                    'asset': str(row['symbol'] or payload.get('symbol') or '-').upper(),
+                    'raw_forecast_score': (probability_up * 2.0) - 1.0,
+                    'bull_threshold': 0.2,
+                    'bear_threshold': -0.2,
+                    'treeshap_log': f"From insights cache: Signal={signal}; ProbUp={probability_up:.4f}; Sentiment={latest_sentiment:.3f}",
+                }
+            )
 
     return {
         'rows': logs,

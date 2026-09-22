@@ -173,31 +173,57 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.watchlistSection {
   display: grid;
-  gap: 6px;
+  gap: 4px;
+}
+
+.watchlistSectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--aj-text-muted);
+  font-weight: 700;
+}
+
+.watchlistSectionItems {
+  display: grid;
+  gap: 4px;
 }
 
 .watchlistActionBar {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 5px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--aj-border);
   background: var(--aj-surface);
 }
 
 .watchlistActionBtn {
   border: 1px solid var(--aj-border);
-  border-radius: 10px;
-  height: 34px;
+  border-radius: 9px;
+  height: 30px;
   background: var(--aj-bg);
   color: var(--aj-text-muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   cursor: pointer;
   padding: 0 8px;
@@ -223,12 +249,12 @@
 .watchRow {
   width: 100%;
   border: 1px solid var(--aj-border);
-  border-radius: 12px;
-  padding: 8px 9px;
+  border-radius: 10px;
+  padding: 7px 8px;
   background: var(--aj-surface);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px auto;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 64px auto;
+  gap: 6px;
   align-items: center;
   cursor: pointer;
   text-align: left;
@@ -253,20 +279,20 @@
   color: var(--aj-text);
   font-weight: 900;
   letter-spacing: -0.02em;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .watchIdentity span {
   color: var(--aj-text-muted);
-  font-size: 11px;
+  font-size: 10px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .sparkline {
-  width: 72px;
-  height: 18px;
+  width: 64px;
+  height: 16px;
 }
 
 .watchNumbers {
@@ -276,12 +302,12 @@
 }
 
 .watchNumbers strong {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--aj-text);
 }
 
 .watchNumbers span {
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .centerColumn {

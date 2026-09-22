@@ -87,6 +87,8 @@ async function fetchBotRules() {
 export default function Automated() {
   const [tab, setTab] = useState(TABS.POSITIONS)
   const [saveState, setSaveState] = useState('idle')
+  const [runState, setRunState] = useState('idle')
+  const [runMessage, setRunMessage] = useState('')
 
   const { data: watchlistData } = useSWR('/api/watchlist', (url) => apiFetch(url), {
     dedupingInterval: 5 * 60 * 1000,
@@ -103,12 +105,13 @@ export default function Automated() {
   )
 
   const { data, mutate, isLoading } = useSWR('bot-rules', fetchBotRules, {
-    dedupingInterval: 5 * 60 * 1000,
-    revalidateOnFocus: false,
+    dedupingInterval: 10 * 1000,
+    revalidateOnFocus: true,
     revalidateOnReconnect: false,
-    revalidateIfStale: false,
+    revalidateIfStale: true,
     shouldRetryOnError: false,
     keepPreviousData: true,
+    refreshInterval: 15 * 1000,
   })
 
   const rules = useMemo(() => normalizeRules(data), [data])
@@ -165,6 +168,64 @@ export default function Automated() {
         },
       },
     })
+  }
+
+  async function runManualExecution(side = 'BUY') {
+    const normalizedSide = String(side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY'
+    if (!selectedAsset || selectedAsset === DEFAULT_ASSET) {
+      setRunState('error')
+      setRunMessage('Choose a watchlist asset first.')
+      return
+    }
+
+    setRunState('running')
+    setRunMessage(`Running ${normalizedSide} test...`)
+
+    try {
+      let marketPrice = null
+      try {
+        const stats = await apiFetch(`/api/market/stats/${encodeURIComponent(selectedAsset)}`)
+        marketPrice = Number(stats?.latest_price)
+      } catch {
+        marketPrice = null
+      }
+
+      const maxCap = Number(assetRule.maxCapitalPerTrade)
+      const requestedAmount = Number.isFinite(maxCap) && maxCap > 0 ? maxCap : 50
+
+      const result = await apiFetch('/api/bot/signals/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          asset_symbol: selectedAsset,
+          signal_received: `MANUAL_TEST_${normalizedSide}`,
+          side: normalizedSide,
+          requested_amount: requestedAmount,
+          requested_price: Number.isFinite(marketPrice) && marketPrice > 0 ? marketPrice : undefined,
+          confidence: 0.65,
+          estimated_pnl: 0,
+          metadata: {
+            source: 'automated-ui-manual-test',
+            strategy: assetRule.strategy,
+            requested_side: normalizedSide,
+          },
+        }),
+      })
+
+      await mutate()
+      setTab(TABS.LOGS)
+
+      if (result?.action_taken === 'Executed') {
+        setRunState('ok')
+        setRunMessage(`${normalizedSide} executed for ${selectedAsset} at ${formatCurrency(result?.execution_price)} (${result?.mode || 'paper'} mode).`)
+      } else {
+        setRunState('error')
+        setRunMessage(result?.reason || `${normalizedSide} rejected by risk controls. Check Execution Audit Logs for details.`)
+      }
+    } catch (error) {
+      setRunState('error')
+      setRunMessage(`Manual run failed: ${error.message}`)
+    }
   }
 
   const statusLabel = saveState === 'saving'
@@ -298,11 +359,36 @@ export default function Automated() {
                 <span className={styles.stepNum}>3</span>
                 <h2 className={styles.stepTitle}>Active Positions & Execution Logs</h2>
               </div>
-              <div className={styles.tabRow}>
+              <div className={styles.actionsRow}>
+                <button
+                  type="button"
+                  className={styles.runBtn}
+                  onClick={() => runManualExecution('BUY')}
+                  disabled={runState === 'running' || isLoading}
+                >
+                  {runState === 'running' ? 'Running...' : 'Run Bot Now'}
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.runBtn} ${styles.sellBtn}`}
+                  onClick={() => runManualExecution('SELL')}
+                  disabled={runState === 'running' || isLoading}
+                >
+                  {runState === 'running' ? 'Running...' : 'Sell Test'}
+                </button>
+                <div className={styles.tabRow}>
                 <button type="button" className={`${styles.tabBtn} ${tab === TABS.POSITIONS ? styles.tabBtnActive : ''}`} onClick={() => setTab(TABS.POSITIONS)}>Active Bot Positions</button>
                 <button type="button" className={`${styles.tabBtn} ${tab === TABS.LOGS ? styles.tabBtnActive : ''}`} onClick={() => setTab(TABS.LOGS)}>Execution Audit Logs</button>
+                </div>
               </div>
             </div>
+
+            {runMessage ? (
+              <p className={`${styles.runMessage} ${runState === 'ok' ? styles.runOk : styles.runError}`}>
+                {runMessage}
+              </p>
+            ) : null}
+            {!rules.botActive ? <p className={styles.hint}>Bot is currently inactive. Any run will be logged as rejected until Master Toggle is enabled.</p> : null}
 
             {tab === TABS.POSITIONS ? (
               <div className={styles.tableWrap}>
@@ -381,6 +467,7 @@ export default function Automated() {
             </div>
           </div>
           <div className={styles.summaryStatus}>{isLoading ? 'Loading rules...' : statusLabel}</div>
+          <div className={styles.summaryStatus}>Auto-refresh: every 15s for positions/logs</div>
         </aside>
       </div>
     </AppShell>

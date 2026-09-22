@@ -19,6 +19,116 @@ from app.api.market import get_market_price, get_historical_data
 router = APIRouter()
 
 
+def _parse_json_payload(raw_value):
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, dict):
+        return raw_value
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _sentiment_label_from_score(score: float) -> str:
+    if score >= 0.5:
+        return 'Very Bullish'
+    if score >= 0.1:
+        return 'Bullish'
+    if score > -0.1:
+        return 'Neutral'
+    if score >= -0.5:
+        return 'Bearish'
+    return 'Very Bearish'
+
+
+def _safe_float(value, default=0.0) -> float:
+    try:
+        n = float(value)
+        return n if n == n else default
+    except Exception:
+        return default
+
+
+async def _sentiment_from_cache(db, owner: str, symbol: str) -> Optional[dict]:
+    insight_row = await db.fetch_one(
+        query=(
+            "SELECT payload, updated_at FROM insights "
+            "WHERE owner = :owner AND symbol = :symbol "
+            "ORDER BY updated_at DESC LIMIT 1"
+        ),
+        values={"owner": owner, "symbol": symbol},
+    )
+
+    news_row = await db.fetch_one(
+        query=(
+            "SELECT payload, updated_at FROM news_cache "
+            "WHERE owner = :owner AND symbol = :symbol "
+            "ORDER BY updated_at DESC LIMIT 1"
+        ),
+        values={"owner": owner, "symbol": symbol},
+    )
+
+    insight_payload = _parse_json_payload(insight_row['payload']) if insight_row else None
+    news_payload = _parse_json_payload(news_row['payload']) if news_row else None
+
+    scored_articles = []
+    for article in (news_payload or {}).get('articles') or []:
+        if not isinstance(article, dict):
+            continue
+        if article.get('sentiment_score') is None:
+            continue
+        scored_articles.append(_safe_float(article.get('sentiment_score'), 0.0))
+
+    if scored_articles:
+        avg_sentiment = float(sum(scored_articles) / len(scored_articles))
+        positive_count = sum(1 for score in scored_articles if score > 0.1)
+        negative_count = sum(1 for score in scored_articles if score < -0.1)
+        neutral_count = len(scored_articles) - positive_count - negative_count
+        total_articles = len(scored_articles)
+        return {
+            'symbol': str(symbol).upper(),
+            'avg_sentiment': avg_sentiment,
+            'heatmap_label': _sentiment_label_from_score(avg_sentiment),
+            'positive_count': positive_count,
+            'negative_count': negative_count,
+            'neutral_count': neutral_count,
+            'total_articles': total_articles,
+            'date': str((news_row['updated_at'] if news_row else None) or (insight_row['updated_at'] if insight_row else None) or ''),
+        }
+
+    insight_score = _safe_float((insight_payload or {}).get('latest_sentiment_score'), None)
+    if insight_score is not None:
+        return {
+            'symbol': str(symbol).upper(),
+            'avg_sentiment': float(insight_score),
+            'heatmap_label': _sentiment_label_from_score(float(insight_score)),
+            'positive_count': 0,
+            'negative_count': 0,
+            'neutral_count': 0,
+            'total_articles': 0,
+            'date': str((insight_row['updated_at'] if insight_row else None) or ''),
+        }
+
+    cached_avg = _safe_float((news_payload or {}).get('avg_sentiment'), None)
+    if cached_avg is not None:
+        return {
+            'symbol': str(symbol).upper(),
+            'avg_sentiment': float(cached_avg),
+            'heatmap_label': _sentiment_label_from_score(float(cached_avg)),
+            'positive_count': 0,
+            'negative_count': 0,
+            'neutral_count': 0,
+            'total_articles': int((news_payload or {}).get('articles_count') or 0),
+            'date': str((news_row['updated_at'] if news_row else None) or ''),
+        }
+
+    return None
+
+
 def _history_fallback_rows(days: int = 30, base_value: float = 100000.0) -> List[dict]:
     safe_days = max(int(days or 30), 1)
     start_day = date.today() - timedelta(days=safe_days - 1)
@@ -482,17 +592,21 @@ async def get_sentiment_heatmap(user=Depends(get_current_user)):
             if sentiment:
                 heatmap.append(sentiment.dict())
             else:
-                # Return neutral if no sentiment data
-                heatmap.append({
-                    "symbol": symbol,
-                    "avg_sentiment": 0,
-                    "heatmap_label": "Neutral",
-                    "positive_count": 0,
-                    "negative_count": 0,
-                    "neutral_count": 0,
-                    "total_articles": 0,
-                    "date": None
-                })
+                cached_sentiment = await _sentiment_from_cache(db, owner, str(symbol).upper())
+                if cached_sentiment:
+                    heatmap.append(cached_sentiment)
+                else:
+                    # Return neutral if no sentiment data anywhere.
+                    heatmap.append({
+                        "symbol": symbol,
+                        "avg_sentiment": 0,
+                        "heatmap_label": "Neutral",
+                        "positive_count": 0,
+                        "negative_count": 0,
+                        "neutral_count": 0,
+                        "total_articles": 0,
+                        "date": None
+                    })
 
         sorted_rows = sorted(heatmap, key=lambda x: x['avg_sentiment'] if x['avg_sentiment'] else 0, reverse=True)
         if sorted_rows:

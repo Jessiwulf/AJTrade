@@ -361,39 +361,47 @@ def _resolve_news_window(days: int, from_date: Optional[str], to_date: Optional[
 
 
 async def _get_newsapi_key_for_owner(owner: str) -> Optional[str]:
-    db = get_database()
-    row = await db.fetch_one(
-        query=(
-            "SELECT encrypted_blob FROM encrypted_api_keys "
-            "WHERE owner = :owner AND lower(service) = 'newsapi' "
-            "ORDER BY created_at DESC LIMIT 1"
-        ),
-        values={"owner": owner},
-    )
-    if not row:
+    try:
+        db = get_database()
+        row = await db.fetch_one(
+            query=(
+                "SELECT encrypted_blob FROM encrypted_api_keys "
+                "WHERE owner = :owner AND lower(service) = 'newsapi' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            values={"owner": owner},
+        )
+        if not row:
+            return None
+
+        from app.core import crypto
+
+        return crypto.decrypt_api_key(row["encrypted_blob"]).decode("utf-8")
+    except Exception as exc:
+        logger.warning('newsapi_key_lookup_failed owner=%s error=%s', owner, exc)
         return None
-
-    from app.core import crypto
-
-    return crypto.decrypt_api_key(row["encrypted_blob"]).decode("utf-8")
 
 
 async def _get_api_key_for_owner(owner: str, service: str) -> Optional[str]:
-    db = get_database()
-    row = await db.fetch_one(
-        query=(
-            "SELECT encrypted_blob FROM encrypted_api_keys "
-            "WHERE owner = :owner AND lower(service) = :service "
-            "ORDER BY created_at DESC LIMIT 1"
-        ),
-        values={"owner": owner, "service": str(service or '').strip().lower()},
-    )
-    if not row:
+    try:
+        db = get_database()
+        row = await db.fetch_one(
+            query=(
+                "SELECT encrypted_blob FROM encrypted_api_keys "
+                "WHERE owner = :owner AND lower(service) = :service "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            values={"owner": owner, "service": str(service or '').strip().lower()},
+        )
+        if not row:
+            return None
+
+        from app.core import crypto
+
+        return crypto.decrypt_api_key(row["encrypted_blob"]).decode("utf-8")
+    except Exception as exc:
+        logger.warning('service_key_lookup_failed owner=%s service=%s error=%s', owner, service, exc)
         return None
-
-    from app.core import crypto
-
-    return crypto.decrypt_api_key(row["encrypted_blob"]).decode("utf-8")
 
 
 async def _get_news_credentials(owner: str) -> Dict[str, Optional[str]]:
@@ -630,6 +638,54 @@ def _fallback_explanation(shap_context: Dict[str, Any], prompt: str) -> Dict[str
     }
 
 
+def _minimal_llm_context(symbol: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    quote = context.get('quote') if isinstance(context.get('quote'), dict) else {}
+    sentiment = context.get('sentiment') if isinstance(context.get('sentiment'), dict) else {}
+    return {
+        'symbol': symbol,
+        'latest_price': context.get('price') or context.get('latest_price') or quote.get('price'),
+        'price_change_pct': context.get('price_change_pct') or quote.get('change_percent') or 0.0,
+        'volume': context.get('volume') or quote.get('volume'),
+        'latest_sentiment_score': context.get('latest_sentiment_score') or sentiment.get('avg_sentiment') or 0.0,
+        'signal': context.get('signal') or context.get('recommendation') or 'HOLD',
+    }
+
+
+async def _generate_with_rescue(user_pref: str, symbol: str, context: Dict[str, Any], prompt: str) -> str:
+    errors: List[str] = []
+
+    try:
+        return await _DUAL_LLM.generate_explanation(user_pref, context, prompt)
+    except Exception as exc:
+        errors.append(f"contextual_generation_failed={exc}")
+
+    try:
+        minimal_context = _minimal_llm_context(symbol, context)
+        return await _DUAL_LLM.generate_explanation(user_pref, minimal_context, prompt)
+    except Exception as exc:
+        errors.append(f"minimal_context_generation_failed={exc}")
+
+    # Final rescue: direct model call without strict context serialization.
+    try:
+        direct_prompt = (
+            f"User message: {prompt}\n"
+            f"Primary symbol: {symbol}\n"
+            "Reply naturally and concisely in the same language as the user."
+        )
+        text = await _DUAL_LLM._ollama_generate(  # pylint: disable=protected-access
+            model=_DUAL_LLM.model_open_source,
+            system="You are AJTrade assistant. Keep answers brief and helpful.",
+            prompt=direct_prompt,
+        )
+        _DUAL_LLM.last_model_used = _DUAL_LLM.model_open_source
+        _DUAL_LLM.last_used_fallback = False
+        return text
+    except Exception as exc:
+        errors.append(f"direct_generation_failed={exc}")
+
+    raise DualLLMManagerError(' | '.join(errors))
+
+
 async def _build_watch_asset_news(
     symbol: str,
     news_creds: Optional[Dict[str, Optional[str]]],
@@ -814,6 +870,20 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
         ]
         for feature in (shap_expl.get('top_features') or [])[:3]:
             rationale.append(_build_natural_rationale_line(feature))
+        snippet = ' | '.join(
+            [
+                f"{feat.get('feature')}={feat.get('impact_pct')}%"
+                for feat in (shap_expl.get('top_features') or [])[:3]
+            ]
+        ) if (shap_expl.get('top_features') or []) else f"Signal={signal}; ProbUp={probability_up:.4f}; Sentiment={latest_sentiment:.3f}"
+        record_forecaster_event(
+            owner,
+            symbol=symbol,
+            raw_forecast_score=(probability_up * 2.0) - 1.0,
+            bull_threshold=0.2,
+            bear_threshold=-0.2,
+            shap_snippet=snippet,
+        )
     except Exception:
         price_change_pct = float(asset.get('price_change_pct') or 0.0)
         outlook = _trend_outlook(price_change_pct, latest_sentiment)
@@ -832,6 +902,14 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
             f"Recent price change is {price_change_pct:.2f}%.",
             f"Average news sentiment score is {latest_sentiment:.2f}.",
         ]
+        record_forecaster_event(
+            owner,
+            symbol=symbol,
+            raw_forecast_score=(probability_up * 2.0) - 1.0,
+            bull_threshold=0.2,
+            bear_threshold=-0.2,
+            shap_snippet=f"Fallback={signal}; ProbUp={probability_up:.4f}; Sentiment={latest_sentiment:.3f}",
+        )
 
     recommendation_map = {
         'BUY': 'Bullish',
@@ -1191,10 +1269,34 @@ async def v2_llm_explain(req: ExplainLLMRequest, user=Depends(get_current_user))
             'used_fallback': _DUAL_LLM.last_used_fallback,
             'explanation': explanation,
         }
-    except DualLLMManagerError as e:
-        return _fallback_explanation(req.shap_context, req.prompt)
-    except Exception as e:
-        return _fallback_explanation(req.shap_context, req.prompt)
+    except DualLLMManagerError:
+        fallback = _fallback_explanation(req.shap_context, req.prompt)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        tokens = _estimate_tokens(req.prompt, str(fallback.get('explanation') or ''))
+        record_llm_prompt(
+            owner,
+            symbol=str(req.shap_context.get('symbol') or '-'),
+            prompt=req.prompt,
+            model_used=str(fallback.get('model_used') or 'rule-based-fallback'),
+            latency_ms=latency_ms,
+            prompt_tokens=tokens['prompt_tokens'],
+            completion_tokens=tokens['completion_tokens'],
+        )
+        return fallback
+    except Exception:
+        fallback = _fallback_explanation(req.shap_context, req.prompt)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        tokens = _estimate_tokens(req.prompt, str(fallback.get('explanation') or ''))
+        record_llm_prompt(
+            owner,
+            symbol=str(req.shap_context.get('symbol') or '-'),
+            prompt=req.prompt,
+            model_used=str(fallback.get('model_used') or 'rule-based-fallback'),
+            latency_ms=latency_ms,
+            prompt_tokens=tokens['prompt_tokens'],
+            completion_tokens=tokens['completion_tokens'],
+        )
+        return fallback
 
 
 @router.post("/public/explain")
@@ -1538,14 +1640,39 @@ async def watchlist_assistant_explain(req: WatchlistAssistantRequest, user=Depen
     if symbol not in symbols:
         raise HTTPException(status_code=403, detail='symbol_not_in_watchlist')
 
+    shap_context: Dict[str, Any] = {'symbol': symbol}
     try:
         from app.api.analytics import get_asset_detail
 
         asset = await get_asset_detail(symbol, req.range)
-        shap_context = _build_llm_asset_context(asset)
+        built = _build_llm_asset_context(asset)
+        if isinstance(built, dict):
+            shap_context.update(built)
+    except Exception as exc:
+        logger.warning('assistant_asset_context_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
+
+    try:
         api_key = await _get_newsapi_key_for_owner(owner)
-        try:
+    except Exception as exc:
+        logger.warning('assistant_newsapi_key_lookup_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
+        api_key = None
+
+    try:
+        db = get_database()
+        insight = await _read_insight_cache(
+            db,
+            owner=owner,
+            symbol=symbol,
+            ttl_minutes=INSIGHTS_CACHE_TTL_MINUTES,
+        )
+        if not insight:
             insight = await _build_watch_asset_insight(symbol, owner, api_key)
+            try:
+                await _write_insight_cache(db, owner=owner, symbol=symbol, payload=insight)
+            except Exception as cache_exc:
+                logger.warning('assistant_insight_cache_write_failed owner=%s symbol=%s error=%s', owner, symbol, cache_exc)
+
+        if isinstance(insight, dict):
             shap_context.update(
                 {
                     'signal': insight.get('signal'),
@@ -1556,35 +1683,43 @@ async def watchlist_assistant_explain(req: WatchlistAssistantRequest, user=Depen
                     'price_change_pct': insight.get('price_change_pct'),
                 }
             )
-        except Exception:
-            # Keep a best-effort context using market metrics even if insight generation fails.
-            pass
-        pref = (req.user_preference or '').strip().lower()
-        user_pref = 'custom' if pref == 'custom' else 'open-source'
-        started = time.perf_counter()
-        try:
-            explanation = await _DUAL_LLM.generate_explanation(user_pref, shap_context, req.prompt)
-            latency_ms = (time.perf_counter() - started) * 1000.0
-            tokens = _estimate_tokens(req.prompt, explanation)
-            record_llm_prompt(
-                owner,
-                symbol=symbol,
-                prompt=req.prompt,
-                model_used=_DUAL_LLM.last_model_used,
-                latency_ms=latency_ms,
-                prompt_tokens=tokens['prompt_tokens'],
-                completion_tokens=tokens['completion_tokens'],
-            )
-            return {
-                'model_used': _DUAL_LLM.last_model_used,
-                'used_fallback': _DUAL_LLM.last_used_fallback,
-                'explanation': explanation,
-            }
-        except Exception:
-            return _fallback_explanation(shap_context, req.prompt)
-    except HTTPException:
-        raise
-    except DualLLMManagerError as e:
-        return _fallback_explanation({'symbol': symbol}, req.prompt)
-    except Exception as e:
-        return _fallback_explanation({'symbol': symbol}, req.prompt)
+    except Exception as exc:
+        logger.warning('assistant_insight_context_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
+
+    pref = (req.user_preference or '').strip().lower()
+    user_pref = 'custom' if pref == 'custom' else 'open-source'
+    started = time.perf_counter()
+
+    try:
+        explanation = await _generate_with_rescue(user_pref, symbol, shap_context, req.prompt)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        tokens = _estimate_tokens(req.prompt, explanation)
+        record_llm_prompt(
+            owner,
+            symbol=symbol,
+            prompt=req.prompt,
+            model_used=_DUAL_LLM.last_model_used,
+            latency_ms=latency_ms,
+            prompt_tokens=tokens['prompt_tokens'],
+            completion_tokens=tokens['completion_tokens'],
+        )
+        return {
+            'model_used': _DUAL_LLM.last_model_used,
+            'used_fallback': _DUAL_LLM.last_used_fallback,
+            'explanation': explanation,
+        }
+    except Exception as llm_exc:
+        logger.warning('assistant_llm_fallback owner=%s symbol=%s error=%s', owner, symbol, llm_exc)
+        fallback = _fallback_explanation(shap_context, req.prompt)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        tokens = _estimate_tokens(req.prompt, str(fallback.get('explanation') or ''))
+        record_llm_prompt(
+            owner,
+            symbol=symbol,
+            prompt=req.prompt,
+            model_used=str(fallback.get('model_used') or 'rule-based-fallback'),
+            latency_ms=latency_ms,
+            prompt_tokens=tokens['prompt_tokens'],
+            completion_tokens=tokens['completion_tokens'],
+        )
+        return fallback

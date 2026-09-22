@@ -142,13 +142,45 @@ function normalizeKeyStatistics(payload) {
     week_52_low: toFiniteNumber(src?.week_52_low ?? src?.week52Low),
     week_52_high: toFiniteNumber(src?.week_52_high ?? src?.week52High),
     volume: toFiniteNumber(src?.volume ?? src?.regularMarketVolume),
-    market_cap: toFiniteNumber(src?.market_cap ?? src?.marketCap ?? src?.market_capitalization),
-    revenue: toFiniteNumber(src?.revenue),
-    net_income: toFiniteNumber(src?.net_income ?? src?.netIncome),
-    eps: toFiniteNumber(src?.eps),
-    pe_ratio: toFiniteNumber(src?.pe_ratio ?? src?.peRatio),
-    beta: toFiniteNumber(src?.beta),
+    market_cap: parseCompactNumber(src?.market_cap ?? src?.marketCap ?? src?.market_capitalization),
+    revenue: parseCompactNumber(src?.revenue),
+    net_income: parseCompactNumber(src?.net_income ?? src?.netIncome),
+    eps: parseCompactNumber(src?.eps),
+    pe_ratio: parseCompactNumber(src?.pe_ratio ?? src?.peRatio),
+    beta: parseCompactNumber(src?.beta),
   }
+}
+
+function parseCompactNumber(value) {
+  if (value == null) return null
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  const text = String(value).trim().toUpperCase().replace(/,/g, '')
+  if (!text) return null
+  let normalized = text
+  let multiplier = 1
+  if (normalized.endsWith('%')) normalized = normalized.slice(0, -1)
+  const suffix = normalized.slice(-1)
+  if (suffix === 'K') {
+    multiplier = 1_000
+    normalized = normalized.slice(0, -1)
+  } else if (suffix === 'M') {
+    multiplier = 1_000_000
+    normalized = normalized.slice(0, -1)
+  } else if (suffix === 'B') {
+    multiplier = 1_000_000_000
+    normalized = normalized.slice(0, -1)
+  } else if (suffix === 'T') {
+    multiplier = 1_000_000_000_000
+    normalized = normalized.slice(0, -1)
+  }
+  const n = Number(normalized)
+  return Number.isFinite(n) ? n * multiplier : null
+}
+
+function toMeaningfulFundamental(value) {
+  if (!Number.isFinite(value)) return null
+  if (value === 0) return null
+  return value
 }
 
 function formatPrice(value) {
@@ -498,14 +530,12 @@ function WatchlistSidebar({
         {!loading && error ? <p className={styles.assetTicker}>{error}</p> : null}
         {!loading && !error && !assets.length ? <p className={styles.assetTicker}>No saved assets in your watchlist.</p> : null}
         {sections.map((section) => (
-          <section key={section.key} style={{ display: 'grid', gap: 6, paddingTop: 2 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '4px 2px 0' }}>
-              <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--aj-text-muted)', fontWeight: 700 }}>
-                {section.label}
-              </span>
-              <span style={{ fontSize: 11, color: 'var(--aj-text-muted)' }}>{section.items.length}</span>
+          <section key={section.key} className={styles.watchlistSection}>
+            <div className={styles.watchlistSectionHeader}>
+              <span>{section.label}</span>
+              <span>{section.items.length}</span>
             </div>
-            <div style={{ display: 'grid', gap: 6 }}>
+            <div className={styles.watchlistSectionItems}>
               {section.items.map((asset) => renderWatchRow(asset))}
             </div>
           </section>
@@ -618,6 +648,34 @@ function WatchlistActionButton({ label, onClick, children, active = false, title
   )
 }
 
+function NewsThumbnail({ article }) {
+  const [imageError, setImageError] = useState(false)
+  const [imageLoaded, setImageLoaded] = useState(false)
+  const thumbnail = getArticleThumbnail(article)
+  const showImage = Boolean(thumbnail) && !imageError
+
+  return (
+    <div className={styles.newsMedia}>
+      {showImage ? (
+        <img
+          src={thumbnail}
+          alt={article.title || 'news thumbnail'}
+          className={styles.newsThumb}
+          loading="lazy"
+          style={{ visibility: imageLoaded ? 'visible' : 'hidden' }}
+          onLoad={() => setImageLoaded(true)}
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <div className={styles.newsThumbFallback}>
+          <span className={styles.newsPlaceholderMark}>AJ</span>
+          <span className={styles.newsPlaceholderText}>Market News</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function NewsAnalysisSection({ articles, loading, error }) {
   return (
     <section className={styles.newsSection} aria-label="News and analysis">
@@ -635,16 +693,7 @@ function NewsAnalysisSection({ articles, loading, error }) {
               rel="noreferrer"
               className={styles.newsCard}
             >
-              <div className={styles.newsMedia}>
-                {getArticleThumbnail(article) ? (
-                  <img src={getArticleThumbnail(article)} alt={article.title || 'news thumbnail'} className={styles.newsThumb} loading="lazy" />
-                ) : (
-                  <div className={styles.newsThumbFallback}>
-                    <span className={styles.newsPlaceholderMark}>AJ</span>
-                    <span className={styles.newsPlaceholderText}>Market News</span>
-                  </div>
-                )}
-              </div>
+              <NewsThumbnail article={article} />
               <div className={styles.newsBody}>
                 <div className={styles.newsMeta}>
                   <span>{article.source || 'Unknown source'}</span>
@@ -752,7 +801,7 @@ export default function Dashboard() {
   const [selectedTicker, setSelectedTicker] = useState('')
   const [timeframe, setTimeframe] = useState('1D')
   const [currency, setCurrency] = useState('USD')
-  const [utcNow, setUtcNow] = useState(new Date())
+  const [utcNow, setUtcNow] = useState(null)
   const [isWatchlistOpen, setIsWatchlistOpen] = useState(true)
   const [isAssistantOpen, setIsAssistantOpen] = useState(true)
   const [watchlistSortMode, setWatchlistSortMode] = useState(WATCHLIST_SORT_MODES.DEFAULT)
@@ -899,7 +948,13 @@ export default function Dashboard() {
   const { data: keyStatistics, isLoading: keyStatisticsIsLoading } = useSWR(
     selectedTicker ? `/api/market/stats/${encodeURIComponent(selectedTicker)}` : null,
     async (url) => normalizeKeyStatistics(await apiFetch(url)),
-    swrOptions,
+    {
+      ...swrOptions,
+      dedupingInterval: 30 * 1000,
+      revalidateOnFocus: true,
+      revalidateIfStale: true,
+      refreshInterval: 45 * 1000,
+    },
   )
 
   const { data: assetNewsData, error: assetNewsErr, isLoading: assetNewsIsLoading } = useSWR(
@@ -921,6 +976,7 @@ export default function Dashboard() {
   const assetNewsError = assetNewsErr?.message || ''
 
   useEffect(() => {
+    setUtcNow(new Date())
     const timer = setInterval(() => setUtcNow(new Date()), 1000)
     return () => clearInterval(timer)
   }, [])
@@ -1035,35 +1091,59 @@ export default function Dashboard() {
   }, [portfolioState, portfolioQuotes, effectiveSnapshots])
 
   const statRows = useMemo(() => {
-    const statisticsPrice = keyStatistics?.latest_price ?? selectedQuote?.price
+    const detailPoints = getDetailPoints(selectedDetail)
+    const detailQuote = selectedQuote || getDetailQuote(selectedDetail) || {}
+    const statisticsPrice = keyStatistics?.latest_price ?? detailQuote?.price ?? selectedQuote?.price
+    const resolvedPreviousClose = keyStatistics?.previous_close ?? detailQuote?.previous_close ?? detailQuote?.previousClose
+    const chartOpen = detailPoints.find((point) => Number.isFinite(Number(point?.open)))?.open ?? detailPoints.find((point) => Number.isFinite(Number(point?.close)))?.close
+    const chartDayLow = detailPoints.reduce((lowest, point) => {
+      const low = Number(point?.low)
+      return Number.isFinite(low) ? (lowest === null ? low : Math.min(lowest, low)) : lowest
+    }, null)
+    const chartDayHigh = detailPoints.reduce((highest, point) => {
+      const high = Number(point?.high)
+      return Number.isFinite(high) ? (highest === null ? high : Math.max(highest, high)) : highest
+    }, null)
+    const resolvedOpen = keyStatistics?.open ?? detailQuote?.open ?? chartOpen
+    const resolvedDayLow = keyStatistics?.day_low ?? detailQuote?.day_low ?? detailQuote?.dayLow ?? chartDayLow
+    const resolvedDayHigh = keyStatistics?.day_high ?? detailQuote?.day_high ?? detailQuote?.dayHigh ?? chartDayHigh
+    const resolvedWeekLow = keyStatistics?.week_52_low ?? detailQuote?.week_52_low ?? detailQuote?.week52Low ?? detailQuote?.fiftyTwoWeekLow
+    const resolvedWeekHigh = keyStatistics?.week_52_high ?? detailQuote?.week_52_high ?? detailQuote?.week52High ?? detailQuote?.fiftyTwoWeekHigh
+    const resolvedVolume = keyStatistics?.volume ?? detailQuote?.volume ?? detailQuote?.regularMarketVolume
+    const resolvedMarketCap = toMeaningfulFundamental(parseCompactNumber(keyStatistics?.market_cap ?? detailQuote?.market_cap ?? detailQuote?.marketCap))
+    const resolvedRevenue = toMeaningfulFundamental(parseCompactNumber(keyStatistics?.revenue ?? detailQuote?.revenue))
+    const resolvedNetIncome = toMeaningfulFundamental(parseCompactNumber(keyStatistics?.net_income ?? detailQuote?.net_income))
+    const resolvedEps = parseCompactNumber(keyStatistics?.eps ?? detailQuote?.eps)
+    const resolvedPeRatio = parseCompactNumber(keyStatistics?.pe_ratio ?? detailQuote?.pe_ratio ?? detailQuote?.peRatio)
+    const resolvedBeta = parseCompactNumber(keyStatistics?.beta ?? detailQuote?.beta)
     const derivedDailyChangePct = Number.isFinite(selectedChangePercent)
       ? selectedChangePercent
-      : (Number.isFinite(keyStatistics?.latest_price) && Number.isFinite(keyStatistics?.previous_close) && keyStatistics.previous_close !== 0)
-        ? ((keyStatistics.latest_price - keyStatistics.previous_close) / keyStatistics.previous_close) * 100
+      : (Number.isFinite(statisticsPrice) && Number.isFinite(resolvedPreviousClose) && resolvedPreviousClose !== 0)
+        ? ((statisticsPrice - resolvedPreviousClose) / resolvedPreviousClose) * 100
         : null
-    const dayRange = (Number.isFinite(keyStatistics?.day_low) || Number.isFinite(keyStatistics?.day_high))
-      ? `${formatCurrencyValue(keyStatistics?.day_low, currency)} - ${formatCurrencyValue(keyStatistics?.day_high, currency)}`
+    const dayRange = (Number.isFinite(resolvedDayLow) || Number.isFinite(resolvedDayHigh))
+      ? `${formatCurrencyValue(resolvedDayLow, currency)} - ${formatCurrencyValue(resolvedDayHigh, currency)}`
       : '—'
-    const weekRange = (Number.isFinite(keyStatistics?.week_52_low) || Number.isFinite(keyStatistics?.week_52_high))
-      ? `${formatCurrencyValue(keyStatistics?.week_52_low, currency)} - ${formatCurrencyValue(keyStatistics?.week_52_high, currency)}`
+    const weekRange = (Number.isFinite(resolvedWeekLow) || Number.isFinite(resolvedWeekHigh))
+      ? `${formatCurrencyValue(resolvedWeekLow, currency)} - ${formatCurrencyValue(resolvedWeekHigh, currency)}`
       : '—'
 
     return [
       { label: 'Live Price', value: formatCurrencyValue(statisticsPrice, currency) },
       { label: 'Daily Change', value: Number.isFinite(derivedDailyChangePct) ? `${formatSigned(derivedDailyChangePct)}%` : '—' },
-      { label: 'Volume', value: formatMetricNumber(keyStatistics?.volume ?? selectedQuote?.volume) },
-      { label: 'Prev. Close', value: formatCurrencyValue(keyStatistics?.previous_close, currency) },
-      { label: 'Open', value: formatCurrencyValue(keyStatistics?.open, currency) },
+      { label: 'Volume', value: formatMetricNumber(resolvedVolume) },
+      { label: 'Prev. Close', value: formatCurrencyValue(resolvedPreviousClose, currency) },
+      { label: 'Open', value: formatCurrencyValue(resolvedOpen, currency) },
       { label: "Day's Range", value: dayRange },
       { label: '52 wk Range', value: weekRange },
-      { label: 'Market Cap', value: formatLargeCurrency(keyStatistics?.market_cap, currency) },
-      { label: 'Revenue', value: formatLargeCurrency(keyStatistics?.revenue, currency) },
-      { label: 'Net Income', value: formatLargeCurrency(keyStatistics?.net_income, currency) },
-      { label: 'EPS', value: formatCurrencyValue(keyStatistics?.eps, currency) },
-      { label: 'P/E Ratio', value: Number.isFinite(Number(keyStatistics?.pe_ratio)) ? Number(keyStatistics.pe_ratio).toFixed(2) : '—' },
-      { label: 'Beta', value: Number.isFinite(Number(keyStatistics?.beta)) ? Number(keyStatistics.beta).toFixed(2) : '—' },
+      { label: 'Market Cap', value: formatLargeCurrency(resolvedMarketCap, currency) },
+      { label: 'Revenue', value: formatLargeCurrency(resolvedRevenue, currency) },
+      { label: 'Net Income', value: formatLargeCurrency(resolvedNetIncome, currency) },
+      { label: 'EPS', value: formatCurrencyValue(resolvedEps, currency) },
+      { label: 'P/E Ratio', value: Number.isFinite(resolvedPeRatio) ? resolvedPeRatio.toFixed(2) : '—' },
+      { label: 'Beta', value: Number.isFinite(resolvedBeta) ? resolvedBeta.toFixed(2) : '—' },
     ]
-  }, [keyStatistics, currency, selectedQuote, selectedChangePercent])
+  }, [keyStatistics, currency, selectedQuote, selectedDetail, selectedChangePercent])
 
   return (
     <AppShell title="Trade Dashboard" subtitle="Market deep dive and AI assistant">
@@ -1113,7 +1193,7 @@ export default function Dashboard() {
               <p className={pctChange >= 0 ? styles.pos : styles.neg}>
                 {formatSigned(absChange)} ({formatSigned(pctChange)}%)
               </p>
-              <span className={styles.priceTimestamp}>{utcNow.toUTCString()}</span>
+              <span className={styles.priceTimestamp}>{utcNow ? utcNow.toUTCString() : 'Loading time...'}</span>
             </div>
           </header>
 

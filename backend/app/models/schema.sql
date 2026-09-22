@@ -119,6 +119,20 @@ CREATE TABLE bot_execution_logs (
   reject_reason text
 );
 
+CREATE TABLE bot_active_positions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid REFERENCES profiles ON DELETE CASCADE,
+  asset_symbol text NOT NULL,
+  entry_price numeric(18,6) NOT NULL DEFAULT 0,
+  current_price numeric(18,6) NOT NULL DEFAULT 0,
+  quantity numeric(18,8) NOT NULL DEFAULT 0,
+  unrealized_pl numeric(18,6) NOT NULL DEFAULT 0,
+  trailing_stop_level numeric(18,6),
+  opened_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(owner_id, asset_symbol)
+);
+
 CREATE TABLE finbert_telemetry_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id uuid REFERENCES profiles ON DELETE CASCADE,
@@ -157,6 +171,8 @@ CREATE TABLE llm_telemetry_events (
 CREATE INDEX idx_trading_rules_owner_asset ON trading_rules(owner_id, asset_symbol);
 CREATE INDEX idx_bot_logs_owner_time ON bot_execution_logs(owner_id, timestamp DESC);
 CREATE INDEX idx_bot_logs_owner_asset_time ON bot_execution_logs(owner_id, asset_symbol, timestamp DESC);
+CREATE INDEX idx_bot_positions_owner_asset ON bot_active_positions(owner_id, asset_symbol);
+CREATE INDEX idx_bot_positions_owner_updated ON bot_active_positions(owner_id, updated_at DESC);
 CREATE INDEX idx_finbert_telemetry_owner_time ON finbert_telemetry_events(owner_id, created_at DESC);
 CREATE INDEX idx_forecaster_telemetry_owner_time ON forecaster_telemetry_events(owner_id, created_at DESC);
 CREATE INDEX idx_llm_telemetry_owner_time ON llm_telemetry_events(owner_id, created_at DESC);

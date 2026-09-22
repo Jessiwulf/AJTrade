@@ -13,7 +13,7 @@ function asArray(payload) {
 }
 
 function normalizeHistory(payload) {
-  return asArray(payload)
+  const normalized = asArray(payload)
     .map((row) => ({
       date: row?.date || row?.metric_date || row?.timestamp || null,
       total_value: Number(row?.total_value ?? row?.totalValue ?? 0),
@@ -22,6 +22,14 @@ function normalizeHistory(payload) {
       total_pl: Number(row?.total_pl ?? row?.totalPl ?? 0),
     }))
     .filter((row) => Boolean(row.date))
+
+  const byDate = new Map()
+  normalized.forEach((row) => {
+    const key = new Date(row.date).toISOString().slice(0, 10)
+    byDate.set(key, { ...row, date: key })
+  })
+
+  return Array.from(byDate.values()).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 }
 
 function normalizeSentiment(payload) {
@@ -120,6 +128,25 @@ function MetricsRow({ metrics }) {
 
 function PortfolioGrowthChart({ history }) {
   const chartData = Array.isArray(history) ? history : []
+  const values = chartData.map((row) => Number(row.total_value)).filter((value) => Number.isFinite(value))
+  const minValue = values.length ? Math.min(...values) : 0
+  const maxValue = values.length ? Math.max(...values) : 0
+  const spread = Math.max(maxValue - minValue, Math.max(Math.abs(maxValue), 1) * 0.01)
+  const yMin = Math.max(0, minValue - spread * 0.25)
+  const yMax = maxValue + spread * 0.25
+
+  function formatXAxis(value) {
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return String(value || '')
+    return date.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
+  }
+
+  function formatYAxis(value) {
+    const amount = Number(value || 0)
+    if (Math.abs(amount) >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`
+    return `$${(amount / 1000).toFixed(0)}k`
+  }
+
   return (
     <section className={styles.panel}>
       <div className={styles.panelHeader}>
@@ -136,8 +163,24 @@ function PortfolioGrowthChart({ history }) {
                 </linearGradient>
               </defs>
               <CartesianGrid vertical={false} stroke="#2f3338" strokeDasharray="3 3" />
-              <XAxis dataKey="date" tick={{ fill: 'var(--aj-text-muted)', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(value) => new Date(value).toLocaleDateString()} />
-              <YAxis dataKey="total_value" tick={{ fill: 'var(--aj-text-muted)', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(value) => `$${(Number(value || 0) / 1000).toFixed(0)}k`} width={68} />
+              <XAxis
+                dataKey="date"
+                tick={{ fill: 'var(--aj-text-muted)', fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={formatXAxis}
+                minTickGap={24}
+                interval="preserveStartEnd"
+              />
+              <YAxis
+                dataKey="total_value"
+                tick={{ fill: 'var(--aj-text-muted)', fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={formatYAxis}
+                width={72}
+                domain={[yMin, yMax]}
+              />
               <Tooltip formatter={(value) => formatCurrency(value)} labelFormatter={(label) => new Date(label).toLocaleDateString()} />
               <Area type="monotone" dataKey="total_value" stroke="#10b981" strokeWidth={2} fill="url(#analyticsValue)" dot={false} />
             </AreaChart>

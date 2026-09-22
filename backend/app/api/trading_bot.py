@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -11,6 +12,7 @@ from app.api.dependencies import get_current_user
 from app.core.db import get_database
 
 router = APIRouter()
+logger = logging.getLogger("ajtrade.trading_bot")
 
 _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,24}$")
 _MODE_VALUES = {"paper", "live"}
@@ -102,6 +104,23 @@ async def _ensure_schema() -> None:
         )
     )
     await db.execute(
+        query=(
+            "CREATE TABLE IF NOT EXISTS bot_active_positions ("
+            "id uuid PRIMARY KEY DEFAULT gen_random_uuid(),"
+            "owner_id uuid NOT NULL,"
+            "asset_symbol text NOT NULL,"
+            "entry_price numeric(18,6) NOT NULL DEFAULT 0,"
+            "current_price numeric(18,6) NOT NULL DEFAULT 0,"
+            "quantity numeric(18,8) NOT NULL DEFAULT 0,"
+            "unrealized_pl numeric(18,6) NOT NULL DEFAULT 0,"
+            "trailing_stop_level numeric(18,6),"
+            "opened_at timestamptz NOT NULL DEFAULT now(),"
+            "updated_at timestamptz NOT NULL DEFAULT now(),"
+            "UNIQUE(owner_id, asset_symbol)"
+            ")"
+        )
+    )
+    await db.execute(
         query="CREATE INDEX IF NOT EXISTS idx_trading_rules_owner_asset ON trading_rules(owner_id, asset_symbol)"
     )
     await db.execute(
@@ -109,6 +128,12 @@ async def _ensure_schema() -> None:
     )
     await db.execute(
         query="CREATE INDEX IF NOT EXISTS idx_bot_logs_owner_asset_time ON bot_execution_logs(owner_id, asset_symbol, timestamp DESC)"
+    )
+    await db.execute(
+        query="CREATE INDEX IF NOT EXISTS idx_bot_positions_owner_asset ON bot_active_positions(owner_id, asset_symbol)"
+    )
+    await db.execute(
+        query="CREATE INDEX IF NOT EXISTS idx_bot_positions_owner_updated ON bot_active_positions(owner_id, updated_at DESC)"
     )
     _SCHEMA_READY = True
 
@@ -211,6 +236,336 @@ async def _load_rule(owner_id: str, asset_symbol: str) -> Optional[Dict[str, Any
         values={"owner_id": owner_id, "asset_symbol": asset_symbol},
     )
     return dict(row) if row else None
+
+
+async def _persist_active_position(
+    *,
+    owner_id: str,
+    asset_symbol: str,
+    side: str,
+    execution_price: Optional[float],
+    requested_amount: float,
+    trailing_stop_pct: Any,
+) -> None:
+    await _ensure_schema()
+    if execution_price is None:
+        return
+
+    fill_price = _coerce_decimal(execution_price, Decimal("0"))
+    if fill_price <= 0:
+        return
+
+    requested = _coerce_decimal(requested_amount, Decimal("0"))
+    if requested <= 0:
+        return
+
+    db = get_database()
+    trailing_pct = _coerce_decimal(trailing_stop_pct, Decimal("0"))
+    trailing_multiplier = Decimal("1") - (trailing_pct / Decimal("100"))
+    trailing_level = (fill_price * trailing_multiplier).quantize(Decimal("0.000001")) if trailing_multiplier > 0 else None
+    fill_quantity = (requested / fill_price).quantize(Decimal("0.00000001"))
+
+    existing = await db.fetch_one(
+        query=(
+            "SELECT entry_price, current_price, quantity, trailing_stop_level "
+            "FROM bot_active_positions "
+            "WHERE owner_id = :owner_id AND asset_symbol = :asset_symbol"
+        ),
+        values={"owner_id": owner_id, "asset_symbol": asset_symbol},
+    )
+
+    normalized_side = str(side or "BUY").upper()
+
+    if normalized_side == "SELL":
+        if not existing:
+            return
+
+        existing_qty = _coerce_decimal(existing["quantity"], Decimal("0"))
+        remaining_qty = existing_qty - fill_quantity
+        if remaining_qty <= 0:
+            await db.execute(
+                query=(
+                    "DELETE FROM bot_active_positions "
+                    "WHERE owner_id = :owner_id AND asset_symbol = :asset_symbol"
+                ),
+                values={"owner_id": owner_id, "asset_symbol": asset_symbol},
+            )
+            return
+
+        entry_price = _coerce_decimal(existing["entry_price"], Decimal("0"))
+        unrealized = ((fill_price - entry_price) * remaining_qty).quantize(Decimal("0.000001"))
+        next_trailing = trailing_level
+        existing_trailing = _coerce_decimal(existing["trailing_stop_level"], Decimal("0"))
+        if existing_trailing > 0 and next_trailing is not None:
+            next_trailing = max(existing_trailing, next_trailing)
+
+        await db.execute(
+            query=(
+                "UPDATE bot_active_positions "
+                "SET current_price = :current_price, quantity = :quantity, unrealized_pl = :unrealized_pl, "
+                "trailing_stop_level = :trailing_stop_level, updated_at = now() "
+                "WHERE owner_id = :owner_id AND asset_symbol = :asset_symbol"
+            ),
+            values={
+                "owner_id": owner_id,
+                "asset_symbol": asset_symbol,
+                "current_price": float(fill_price),
+                "quantity": float(remaining_qty),
+                "unrealized_pl": float(unrealized),
+                "trailing_stop_level": float(next_trailing) if next_trailing is not None else None,
+            },
+        )
+        return
+
+    if not existing:
+        await db.execute(
+            query=(
+                "INSERT INTO bot_active_positions "
+                "(owner_id, asset_symbol, entry_price, current_price, quantity, unrealized_pl, trailing_stop_level, opened_at, updated_at) "
+                "VALUES (:owner_id, :asset_symbol, :entry_price, :current_price, :quantity, :unrealized_pl, :trailing_stop_level, now(), now())"
+            ),
+            values={
+                "owner_id": owner_id,
+                "asset_symbol": asset_symbol,
+                "entry_price": float(fill_price),
+                "current_price": float(fill_price),
+                "quantity": float(fill_quantity),
+                "unrealized_pl": 0.0,
+                "trailing_stop_level": float(trailing_level) if trailing_level is not None else None,
+            },
+        )
+        return
+
+    existing_qty = _coerce_decimal(existing["quantity"], Decimal("0"))
+    next_qty = existing_qty + fill_quantity
+    if next_qty <= 0:
+        next_qty = fill_quantity
+
+    existing_entry = _coerce_decimal(existing["entry_price"], Decimal("0"))
+    weighted_entry = ((existing_entry * existing_qty) + (fill_price * fill_quantity)) / next_qty
+    weighted_entry = weighted_entry.quantize(Decimal("0.000001"))
+    unrealized = ((fill_price - weighted_entry) * next_qty).quantize(Decimal("0.000001"))
+
+    existing_trailing = _coerce_decimal(existing["trailing_stop_level"], Decimal("0"))
+    next_trailing = trailing_level
+    if existing_trailing > 0 and next_trailing is not None:
+        next_trailing = max(existing_trailing, next_trailing)
+
+    await db.execute(
+        query=(
+            "UPDATE bot_active_positions "
+            "SET entry_price = :entry_price, current_price = :current_price, quantity = :quantity, "
+            "unrealized_pl = :unrealized_pl, trailing_stop_level = :trailing_stop_level, updated_at = now() "
+            "WHERE owner_id = :owner_id AND asset_symbol = :asset_symbol"
+        ),
+        values={
+            "owner_id": owner_id,
+            "asset_symbol": asset_symbol,
+            "entry_price": float(weighted_entry),
+            "current_price": float(fill_price),
+            "quantity": float(next_qty),
+            "unrealized_pl": float(unrealized),
+            "trailing_stop_level": float(next_trailing) if next_trailing is not None else None,
+        },
+    )
+
+
+async def _fetch_active_positions(owner_id: str) -> list[Dict[str, Any]]:
+    await _ensure_schema()
+    db = get_database()
+    rows = await db.fetch_all(
+        query=(
+            "SELECT asset_symbol, entry_price, current_price, quantity, unrealized_pl, trailing_stop_level, updated_at "
+            "FROM bot_active_positions "
+            "WHERE owner_id = :owner_id "
+            "ORDER BY updated_at DESC"
+        ),
+        values={"owner_id": owner_id},
+    )
+    positions: list[Dict[str, Any]] = []
+    for row in rows:
+        positions.append(
+            {
+                "asset": row["asset_symbol"],
+                "entryPrice": float(row["entry_price"] or 0),
+                "currentPrice": float(row["current_price"] or 0),
+                "quantity": float(row["quantity"] or 0),
+                "unrealizedPl": float(row["unrealized_pl"] or 0),
+                "trailingStopLevel": float(row["trailing_stop_level"] or 0),
+            }
+        )
+    return positions
+
+
+async def _sync_execution_to_portfolio(
+    *,
+    owner_id: str,
+    signal_data: SignalData,
+    execution_price: Optional[float],
+) -> None:
+    if execution_price is None:
+        return
+
+    price = _coerce_decimal(execution_price, Decimal("0"))
+    if price <= 0:
+        return
+
+    requested_notional = _coerce_decimal(signal_data.requested_amount, Decimal("0"))
+    if requested_notional <= 0:
+        return
+
+    fill_qty = (requested_notional / price).quantize(Decimal("0.000001"))
+    if fill_qty <= 0:
+        return
+
+    asset_symbol = _normalize_symbol(signal_data.asset_symbol)
+    side = str(signal_data.side or "BUY").upper()
+    db = get_database()
+
+    portfolio = await db.fetch_one(
+        query="SELECT id, cash_balance FROM portfolios WHERE owner = :owner",
+        values={"owner": owner_id},
+    )
+    if not portfolio:
+        portfolio = await db.fetch_one(
+            query=(
+                "INSERT INTO portfolios (owner, cash_balance) VALUES (:owner, :cash_balance) "
+                "RETURNING id, cash_balance"
+            ),
+            values={"owner": owner_id, "cash_balance": Decimal("100000")},
+        )
+    if not portfolio:
+        return
+
+    portfolio_id = portfolio["id"]
+    cash_balance = _coerce_decimal(portfolio["cash_balance"], Decimal("100000"))
+    notes = f"Automated bot {side} via {signal_data.signal_received}"
+
+    async with db.transaction():
+        position = await db.fetch_one(
+            query=(
+                "SELECT quantity, avg_price FROM portfolio_positions "
+                "WHERE portfolio_id = :portfolio_id AND symbol = :symbol"
+            ),
+            values={"portfolio_id": portfolio_id, "symbol": asset_symbol},
+        )
+
+        if side == "BUY":
+            if position:
+                existing_qty = _coerce_decimal(position["quantity"], Decimal("0"))
+                existing_avg = _coerce_decimal(position["avg_price"], Decimal("0"))
+                next_qty = existing_qty + fill_qty
+                if next_qty <= 0:
+                    next_qty = fill_qty
+                next_avg = ((existing_avg * existing_qty) + (price * fill_qty)) / next_qty
+                await db.execute(
+                    query=(
+                        "UPDATE portfolio_positions "
+                        "SET quantity = :quantity, avg_price = :avg_price, updated_at = now() "
+                        "WHERE portfolio_id = :portfolio_id AND symbol = :symbol"
+                    ),
+                    values={
+                        "portfolio_id": portfolio_id,
+                        "symbol": asset_symbol,
+                        "quantity": next_qty,
+                        "avg_price": next_avg,
+                    },
+                )
+            else:
+                await db.execute(
+                    query=(
+                        "INSERT INTO portfolio_positions (portfolio_id, symbol, quantity, avg_price) "
+                        "VALUES (:portfolio_id, :symbol, :quantity, :avg_price)"
+                    ),
+                    values={
+                        "portfolio_id": portfolio_id,
+                        "symbol": asset_symbol,
+                        "quantity": fill_qty,
+                        "avg_price": price,
+                    },
+                )
+
+            cash_balance = cash_balance - requested_notional
+            await db.execute(
+                query="UPDATE portfolios SET cash_balance = :cash_balance, updated_at = now() WHERE id = :id",
+                values={"id": portfolio_id, "cash_balance": cash_balance},
+            )
+            await db.execute(
+                query=(
+                    "INSERT INTO trading_history "
+                    "(portfolio_id, symbol, trade_type, quantity, price, notional, fee, pl, signal_source, notes) "
+                    "VALUES (:portfolio_id, :symbol, 'BUY', :quantity, :price, :notional, :fee, :pl, :signal_source, :notes)"
+                ),
+                values={
+                    "portfolio_id": portfolio_id,
+                    "symbol": asset_symbol,
+                    "quantity": fill_qty,
+                    "price": price,
+                    "notional": requested_notional,
+                    "fee": Decimal("0"),
+                    "pl": Decimal("0"),
+                    "signal_source": "bot",
+                    "notes": notes,
+                },
+            )
+            return
+
+        # SELL path: only close/reduce if local portfolio position exists.
+        if not position:
+            return
+
+        existing_qty = _coerce_decimal(position["quantity"], Decimal("0"))
+        existing_avg = _coerce_decimal(position["avg_price"], Decimal("0"))
+        sell_qty = fill_qty if fill_qty <= existing_qty else existing_qty
+        if sell_qty <= 0:
+            return
+
+        notional = (sell_qty * price).quantize(Decimal("0.01"))
+        realized_pl = ((price - existing_avg) * sell_qty).quantize(Decimal("0.01"))
+        remaining_qty = existing_qty - sell_qty
+
+        if remaining_qty <= 0:
+            await db.execute(
+                query="DELETE FROM portfolio_positions WHERE portfolio_id = :portfolio_id AND symbol = :symbol",
+                values={"portfolio_id": portfolio_id, "symbol": asset_symbol},
+            )
+        else:
+            await db.execute(
+                query=(
+                    "UPDATE portfolio_positions "
+                    "SET quantity = :quantity, updated_at = now() "
+                    "WHERE portfolio_id = :portfolio_id AND symbol = :symbol"
+                ),
+                values={
+                    "portfolio_id": portfolio_id,
+                    "symbol": asset_symbol,
+                    "quantity": remaining_qty,
+                },
+            )
+
+        cash_balance = cash_balance + notional
+        await db.execute(
+            query="UPDATE portfolios SET cash_balance = :cash_balance, updated_at = now() WHERE id = :id",
+            values={"id": portfolio_id, "cash_balance": cash_balance},
+        )
+        await db.execute(
+            query=(
+                "INSERT INTO trading_history "
+                "(portfolio_id, symbol, trade_type, quantity, price, notional, fee, pl, signal_source, notes) "
+                "VALUES (:portfolio_id, :symbol, 'SELL', :quantity, :price, :notional, :fee, :pl, :signal_source, :notes)"
+            ),
+            values={
+                "portfolio_id": portfolio_id,
+                "symbol": asset_symbol,
+                "quantity": sell_qty,
+                "price": price,
+                "notional": notional,
+                "fee": Decimal("0"),
+                "pl": realized_pl,
+                "signal_source": "bot",
+                "notes": notes,
+            },
+        )
 
 
 async def evaluate_and_execute_trade(signal_data: SignalData, owner_id: str) -> ExecutionResult:
@@ -336,6 +691,37 @@ async def evaluate_and_execute_trade(signal_data: SignalData, owner_id: str) -> 
         execution_price=execution_price,
         reject_reason=None,
     )
+    try:
+        await _persist_active_position(
+            owner_id=owner_id,
+            asset_symbol=asset_symbol,
+            side=signal_data.side,
+            execution_price=execution_price,
+            requested_amount=signal_data.requested_amount,
+            trailing_stop_pct=rule.get("trailing_stop_pct"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "active_position_persist_failed owner=%s asset=%s side=%s error=%s",
+            owner_id,
+            asset_symbol,
+            signal_data.side,
+            exc,
+        )
+    try:
+        await _sync_execution_to_portfolio(
+            owner_id=owner_id,
+            signal_data=signal_data,
+            execution_price=execution_price,
+        )
+    except Exception as exc:
+        logger.warning(
+            "portfolio_sync_from_bot_failed owner=%s asset=%s side=%s error=%s",
+            owner_id,
+            asset_symbol,
+            signal_data.side,
+            exc,
+        )
 
     return ExecutionResult(
         ok=True,
@@ -417,7 +803,7 @@ async def _build_rules_response(owner_id: str) -> Dict[str, Any]:
         "selectedAsset": selected_asset,
         "updatedAt": str(updated_at) if updated_at else None,
         "assetRules": asset_rules,
-        "activePositions": [],
+        "activePositions": await _fetch_active_positions(owner_id),
         "executionLogs": execution_logs,
     }
 

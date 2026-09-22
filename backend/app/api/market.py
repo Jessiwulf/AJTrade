@@ -51,7 +51,7 @@ def _epoch_to_iso(ts: int) -> str:
 def _fetch_yahoo_fundamentals(symbol: str) -> dict:
     url = f'https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}'
     params = {
-        'modules': 'price,summaryDetail,defaultKeyStatistics',
+        'modules': 'price,summaryDetail,defaultKeyStatistics,financialData',
     }
     headers = {
         'accept': 'application/json,text/plain,*/*',
@@ -78,15 +78,25 @@ def _fetch_yahoo_fundamentals(symbol: str) -> dict:
     price = result.get('price') or {}
     summary = result.get('summaryDetail') or {}
     stats = result.get('defaultKeyStatistics') or {}
+    financial = result.get('financialData') or {}
 
     return {
         'market_cap': _raw_or_none(price.get('marketCap')),
+        'latest_price': _raw_or_none(price.get('regularMarketPrice')),
+        'previous_close': _raw_or_none(price.get('regularMarketPreviousClose')),
+        'open': _raw_or_none(price.get('regularMarketOpen')),
+        'day_low': _raw_or_none(price.get('regularMarketDayLow')),
+        'day_high': _raw_or_none(price.get('regularMarketDayHigh')),
         'volume': _raw_or_none(summary.get('volume')),
         'avg_volume': _raw_or_none(summary.get('averageVolume')),
         'pe_ratio': _raw_or_none(summary.get('trailingPE')) or _raw_or_none(stats.get('trailingPE')),
         'dividend_yield': _raw_or_none(summary.get('dividendYield')),
         'week_52_high': _raw_or_none(summary.get('fiftyTwoWeekHigh')),
         'week_52_low': _raw_or_none(summary.get('fiftyTwoWeekLow')),
+        'revenue': _raw_or_none(financial.get('totalRevenue')),
+        'net_income': _raw_or_none(financial.get('netIncomeToCommon')),
+        'eps': _raw_or_none(stats.get('trailingEps')) or _raw_or_none(financial.get('trailingEps')),
+        'beta': _raw_or_none(stats.get('beta')),
     }
 
 
@@ -401,6 +411,34 @@ def _fetch_quotes(symbols: List[str]) -> List[dict]:
 
 
 def _none_if_nan(value):
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        text = value.strip().upper().replace(',', '')
+        if not text:
+            return None
+        multiplier = 1.0
+        if text.endswith('%'):
+            text = text[:-1]
+        suffix_multipliers = {
+            'K': 1_000.0,
+            'M': 1_000_000.0,
+            'B': 1_000_000_000.0,
+            'T': 1_000_000_000_000.0,
+        }
+        last = text[-1:]
+        if last in suffix_multipliers:
+            multiplier = suffix_multipliers[last]
+            text = text[:-1]
+        try:
+            number = float(text) * multiplier
+        except (TypeError, ValueError):
+            return None
+        if number != number:
+            return None
+        return number
+
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -419,21 +457,26 @@ def _fetch_asset_statistics(symbol: str) -> dict:
 
     ticker = yf.Ticker(normalized)
     info = ticker.info or {}
+    fundamentals = {}
+    try:
+        fundamentals = _fetch_yahoo_fundamentals(normalized)
+    except Exception:
+        fundamentals = {}
 
-    previous_close = _none_if_nan(info.get('previousClose'))
-    open_price = _none_if_nan(info.get('open'))
-    day_low = _none_if_nan(info.get('dayLow'))
-    day_high = _none_if_nan(info.get('dayHigh'))
-    week_low = _none_if_nan(info.get('fiftyTwoWeekLow'))
-    week_high = _none_if_nan(info.get('fiftyTwoWeekHigh'))
+    previous_close = _none_if_nan(info.get('previousClose')) or _none_if_nan(fundamentals.get('previous_close'))
+    open_price = _none_if_nan(info.get('open')) or _none_if_nan(fundamentals.get('open'))
+    day_low = _none_if_nan(info.get('dayLow')) or _none_if_nan(fundamentals.get('day_low'))
+    day_high = _none_if_nan(info.get('dayHigh')) or _none_if_nan(fundamentals.get('day_high'))
+    week_low = _none_if_nan(info.get('fiftyTwoWeekLow')) or _none_if_nan(fundamentals.get('week_52_low'))
+    week_high = _none_if_nan(info.get('fiftyTwoWeekHigh')) or _none_if_nan(fundamentals.get('week_52_high'))
 
-    revenue = _none_if_nan(info.get('totalRevenue'))
-    net_income = _none_if_nan(info.get('netIncomeToCommon'))
-    eps = _none_if_nan(info.get('trailingEps'))
-    pe_ratio = _none_if_nan(info.get('trailingPE'))
-    beta = _none_if_nan(info.get('beta'))
+    revenue = _none_if_nan(info.get('totalRevenue')) or _none_if_nan(fundamentals.get('revenue'))
+    net_income = _none_if_nan(info.get('netIncomeToCommon')) or _none_if_nan(fundamentals.get('net_income'))
+    eps = _none_if_nan(info.get('trailingEps')) or _none_if_nan(fundamentals.get('eps'))
+    pe_ratio = _none_if_nan(info.get('trailingPE')) or _none_if_nan(fundamentals.get('pe_ratio'))
+    beta = _none_if_nan(info.get('beta')) or _none_if_nan(fundamentals.get('beta'))
 
-    latest_price = _none_if_nan(info.get('currentPrice'))
+    latest_price = _none_if_nan(info.get('currentPrice')) or _none_if_nan(fundamentals.get('latest_price'))
     if latest_price is None:
         chart = _fetch_yahoo_chart_with_variants(normalized, 'day')
         quote = chart.get('quote') or {}
@@ -454,6 +497,28 @@ def _fetch_asset_statistics(symbol: str) -> dict:
             week_low = week_low if week_low is not None else _none_if_nan(quote.get('week_52_low'))
             week_high = week_high if week_high is not None else _none_if_nan(quote.get('week_52_high'))
 
+    if open_price is None or day_low is None or day_high is None or week_low is None or week_high is None:
+        chart = _fetch_yahoo_chart_with_variants(normalized, 'day')
+        quote = chart.get('quote') or {}
+        points = chart.get('points') or []
+        if open_price is None:
+            open_price = _none_if_nan(quote.get('open'))
+            if open_price is None:
+                first_open = next((_none_if_nan(point.get('open')) for point in points if _none_if_nan(point.get('open')) is not None), None)
+                if first_open is None:
+                    first_open = next((_none_if_nan(point.get('close')) for point in points if _none_if_nan(point.get('close')) is not None), None)
+                open_price = first_open
+        if day_low is None or day_high is None:
+            lows = [p.get('low') for p in points if p.get('low') is not None]
+            highs = [p.get('high') for p in points if p.get('high') is not None]
+            if day_low is None and lows:
+                day_low = float(min(lows))
+            if day_high is None and highs:
+                day_high = float(max(highs))
+        if week_low is None or week_high is None:
+            week_low = week_low if week_low is not None else _none_if_nan(quote.get('week_52_low'))
+            week_high = week_high if week_high is not None else _none_if_nan(quote.get('week_52_high'))
+
     return {
         'symbol': normalized,
         'currency': info.get('currency'),
@@ -464,8 +529,8 @@ def _fetch_asset_statistics(symbol: str) -> dict:
         'day_high': day_high,
         'week_52_low': week_low,
         'week_52_high': week_high,
-        'volume': _none_if_nan(info.get('volume')),
-        'market_cap': _none_if_nan(info.get('marketCap')),
+        'volume': _none_if_nan(info.get('volume')) or _none_if_nan(fundamentals.get('volume')),
+        'market_cap': _none_if_nan(info.get('marketCap')) or _none_if_nan(fundamentals.get('market_cap')),
         'revenue': revenue,
         'net_income': net_income,
         'eps': eps,

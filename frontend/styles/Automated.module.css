@@ -172,6 +172,54 @@
   gap: 8px;
 }
 
+.actionsRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.runBtn {
+  border: 1px solid var(--aj-accent-border-strong);
+  border-radius: 999px;
+  background: var(--aj-cta-gradient);
+  color: var(--aj-ink);
+  font-weight: 900;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.runBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sellBtn {
+  background: var(--aj-surface);
+  color: var(--aj-negative);
+  border-color: color-mix(in srgb, var(--aj-negative) 55%, var(--aj-border) 45%);
+}
+
+.runMessage {
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runOk {
+  color: var(--aj-positive);
+}
+
+.runError {
+  color: var(--aj-negative);
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--aj-text-muted);
+}
+
 .tabBtn {
   border: 1px solid var(--aj-border);
   border-radius: 999px;
@@ -272,5 +320,10 @@
 
   .fieldGrid {
     grid-template-columns: 1fr;
+  }
+
+  .actionsRow {
+    width: 100%;
+    justify-content: flex-start;
   }
 }

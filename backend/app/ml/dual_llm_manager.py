@@ -34,10 +34,16 @@ class DualLLMManager:
         ollama_host: Optional[str] = None,
         timeout_s: float = 180.0,
     ) -> None:
-        base_host = (ollama_host or os.environ.get("OLLAMA_HOST") or "http://ollama:11434").rstrip("/")
-        self.ollama_generate_url = f"{base_host}/api/generate"
+        configured_host = (ollama_host or os.environ.get("OLLAMA_HOST") or "").strip().rstrip("/")
+        if configured_host:
+            hosts = [configured_host]
+        else:
+            # Try local-first for non-container dev, then docker service host.
+            hosts = ["http://localhost:11434", "http://127.0.0.1:11434", "http://ollama:11434"]
+        self.ollama_generate_urls = [f"{host}/api/generate" for host in hosts]
         timeout_override = os.environ.get("OLLAMA_TIMEOUT_S")
         self.timeout_s = float(timeout_override or timeout_s)
+        self.keep_alive = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
         self.last_model_used: Optional[str] = None
         self.last_used_fallback: bool = False
 
@@ -117,21 +123,30 @@ class DualLLMManager:
             "prompt": prompt,
             "stream": False,
             "think": False,
+            "keep_alive": self.keep_alive,
         }
         timeout = httpx.Timeout(connect=20.0, read=self.timeout_s, write=20.0, pool=20.0)
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(self.ollama_generate_url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        last_error: Optional[Exception] = None
+        for endpoint in self.ollama_generate_urls:
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(endpoint, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
 
-        if not isinstance(data, dict):
-            raise DualLLMManagerError("ollama_invalid_response")
+                if not isinstance(data, dict):
+                    raise DualLLMManagerError("ollama_invalid_response")
 
-        text = str(data.get("response") or "").strip()
-        if not text:
-            raise DualLLMManagerError("ollama_empty_response")
-        return text
+                text = str(data.get("response") or "").strip()
+                if not text:
+                    raise DualLLMManagerError("ollama_empty_response")
+                return text
+            except Exception as exc:
+                last_error = exc
+                continue
+
+        raise DualLLMManagerError(f"ollama_unreachable: {last_error}")
 
     async def generate_explanation(self, user_preference: str, shap_context: Dict[str, Any], user_message: str) -> str:
         """Generate a human-readable explanation using the selected LLM with strict fallback.
