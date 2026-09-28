@@ -167,6 +167,22 @@
   font-size: 12px;
 }
 
+.saveBtn {
+  margin-top: 14px;
+  border: 1px solid var(--aj-accent-border-strong);
+  border-radius: 999px;
+  background: var(--aj-cta-gradient);
+  color: var(--aj-ink);
+  font-weight: 900;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.saveBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .tabRow {
   display: flex;
   gap: 8px;

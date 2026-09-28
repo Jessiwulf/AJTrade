@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import AppShell from '../components/AppShell'
 import { apiFetch } from '../lib/api'
@@ -87,6 +87,7 @@ async function fetchBotRules() {
 export default function Automated() {
   const [tab, setTab] = useState(TABS.POSITIONS)
   const [saveState, setSaveState] = useState('idle')
+  const [isEditing, setIsEditing] = useState(false)
   const [runState, setRunState] = useState('idle')
   const [runMessage, setRunMessage] = useState('')
 
@@ -115,11 +116,37 @@ export default function Automated() {
   })
 
   const rules = useMemo(() => normalizeRules(data), [data])
-  const selectedAsset = rules.selectedAsset && rules.selectedAsset !== DEFAULT_ASSET
-    ? rules.selectedAsset
+  const [draftRules, setDraftRules] = useState(DEFAULT_RULESET)
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraftRules((prev) => {
+        const incoming = normalizeRules(data)
+        const pinnedAsset = prev?.selectedAsset && prev.selectedAsset !== DEFAULT_ASSET
+          ? prev.selectedAsset
+          : null
+        if (!pinnedAsset) return incoming
+        return {
+          ...incoming,
+          selectedAsset: pinnedAsset,
+        }
+      })
+    }
+  }, [data, isEditing])
+
+  const selectedAsset = draftRules.selectedAsset && draftRules.selectedAsset !== DEFAULT_ASSET
+    ? draftRules.selectedAsset
     : (watchlistSymbols[0] || DEFAULT_ASSET)
 
-  const assetRule = useMemo(() => ensureAssetRule(rules, selectedAsset), [rules, selectedAsset])
+  const assetRule = useMemo(() => ensureAssetRule(draftRules, selectedAsset), [draftRules, selectedAsset])
+
+  const assetOptions = useMemo(() => {
+    const base = watchlistSymbols.length ? [...watchlistSymbols] : [DEFAULT_ASSET]
+    if (selectedAsset !== DEFAULT_ASSET && !base.includes(selectedAsset)) {
+      return [selectedAsset, ...base]
+    }
+    return base
+  }, [watchlistSymbols, selectedAsset])
 
   const activePositions = useMemo(
     () => (rules.activePositions || []).filter((position) => selectedAsset === DEFAULT_ASSET || position.asset === selectedAsset),
@@ -133,15 +160,24 @@ export default function Automated() {
 
   async function saveRules(nextRules) {
     const payload = normalizeRules(nextRules)
+    const pinnedAsset = payload.selectedAsset && payload.selectedAsset !== DEFAULT_ASSET
+      ? payload.selectedAsset
+      : selectedAsset
     setSaveState('saving')
-    await mutate(payload, false)
     try {
       const server = await apiFetch('/api/bot/rules', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...payload, updatedAt: new Date().toISOString() }),
       })
-      await mutate(normalizeRules(server || payload), false)
+      const normalizedServer = normalizeRules(server || payload)
+      const normalized = {
+        ...normalizedServer,
+        selectedAsset: pinnedAsset,
+      }
+      setDraftRules(normalized)
+      setIsEditing(false)
+      await mutate(normalized, false)
       setSaveState('saved')
     } catch {
       setSaveState('cached')
@@ -149,24 +185,40 @@ export default function Automated() {
   }
 
   function updateRoot(key, value) {
-    saveRules({
-      ...rules,
-      selectedAsset,
+    setIsEditing(true)
+    setSaveState('idle')
+    setDraftRules((prev) => normalizeRules({
+      ...prev,
+      selectedAsset: key === 'selectedAsset' ? value : selectedAsset,
       [key]: value,
-    })
+    }))
   }
 
   function updateAssetRule(key, value) {
-    saveRules({
-      ...rules,
-      selectedAsset,
-      assetRules: {
-        ...rules.assetRules,
-        [selectedAsset]: {
-          ...ensureAssetRule(rules, selectedAsset),
-          [key]: value,
+    setIsEditing(true)
+    setSaveState('idle')
+    setDraftRules((prev) => {
+      const base = normalizeRules(prev)
+      return {
+        ...base,
+        selectedAsset,
+        assetRules: {
+          ...base.assetRules,
+          [selectedAsset]: {
+            ...ensureAssetRule(base, selectedAsset),
+            [key]: value,
+          },
         },
-      },
+      }
+    })
+  }
+
+  async function handleManualSave() {
+    await saveRules({
+      ...draftRules,
+      selectedAsset,
+      activePositions: rules.activePositions,
+      executionLogs: rules.executionLogs,
     })
   }
 
@@ -230,7 +282,11 @@ export default function Automated() {
 
   const statusLabel = saveState === 'saving'
     ? 'Saving bot rules...'
-    : (saveState === 'saved' ? 'Rules synced to /api/bot/rules' : (saveState === 'cached' ? 'Offline mode: rules cached locally via SWR' : ''))
+    : (saveState === 'saved'
+      ? 'Rules synced to /api/bot/rules'
+      : (saveState === 'cached'
+        ? 'Save failed. Draft changes are still local.'
+        : (isEditing ? 'Unsaved changes in local draft.' : 'Rules synced to database.')))
 
   return (
     <AppShell
@@ -253,7 +309,7 @@ export default function Automated() {
                   onChange={(event) => updateRoot('selectedAsset', event.target.value)}
                   aria-label="Select watchlist asset"
                 >
-                  {(watchlistSymbols.length ? watchlistSymbols : [DEFAULT_ASSET]).map((symbol) => (
+                  {assetOptions.map((symbol) => (
                     <option key={symbol} value={symbol}>
                       {symbol === DEFAULT_ASSET ? 'No Watchlist Asset' : symbol}
                     </option>
@@ -265,14 +321,14 @@ export default function Automated() {
                 <div className={styles.toggleRow}>
                   <div>
                     <div className={styles.k}>Master Toggle</div>
-                    <div className={styles.v}>{rules.botActive ? 'Bot Active' : 'Bot Inactive'}</div>
+                      <div className={styles.v}>{draftRules.botActive ? 'Bot Active' : 'Bot Inactive'}</div>
                   </div>
                   <button
                     type="button"
-                    className={`${styles.switch} ${rules.botActive ? styles.switchOn : ''}`}
-                    onClick={() => updateRoot('botActive', !rules.botActive)}
+                    className={`${styles.switch} ${draftRules.botActive ? styles.switchOn : ''}`}
+                    onClick={() => updateRoot('botActive', !draftRules.botActive)}
                     aria-label="Toggle bot active state"
-                    aria-pressed={Boolean(rules.botActive)}
+                    aria-pressed={Boolean(draftRules.botActive)}
                   >
                     <span className={styles.knob} />
                   </button>
@@ -281,14 +337,14 @@ export default function Automated() {
                 <div className={styles.toggleRow}>
                   <div>
                     <div className={styles.k}>Execution Mode</div>
-                    <div className={styles.v}>{rules.executionMode === 'live' ? 'Live Execution' : 'Paper Trading'}</div>
+                    <div className={styles.v}>{draftRules.executionMode === 'live' ? 'Live Execution' : 'Paper Trading'}</div>
                   </div>
                   <button
                     type="button"
-                    className={`${styles.switch} ${rules.executionMode === 'live' ? styles.switchOn : ''}`}
-                    onClick={() => updateRoot('executionMode', rules.executionMode === 'live' ? 'paper' : 'live')}
+                    className={`${styles.switch} ${draftRules.executionMode === 'live' ? styles.switchOn : ''}`}
+                    onClick={() => updateRoot('executionMode', draftRules.executionMode === 'live' ? 'paper' : 'live')}
                     aria-label="Toggle paper trading or live execution"
-                    aria-pressed={rules.executionMode === 'live'}
+                    aria-pressed={draftRules.executionMode === 'live'}
                   >
                     <span className={styles.knob} />
                   </button>
@@ -388,7 +444,7 @@ export default function Automated() {
                 {runMessage}
               </p>
             ) : null}
-            {!rules.botActive ? <p className={styles.hint}>Bot is currently inactive. Any run will be logged as rejected until Master Toggle is enabled.</p> : null}
+            {!draftRules.botActive ? <p className={styles.hint}>Bot is currently inactive. Any run will be logged as rejected until Master Toggle is enabled.</p> : null}
 
             {tab === TABS.POSITIONS ? (
               <div className={styles.tableWrap}>
@@ -466,6 +522,14 @@ export default function Automated() {
               <div className={styles.v}>{formatCurrency(assetRule.maxCapitalPerTrade)} / {formatCurrency(assetRule.maxDailyLossLimit)}</div>
             </div>
           </div>
+          <button
+            type="button"
+            className={styles.saveBtn}
+            onClick={handleManualSave}
+            disabled={saveState === 'saving' || !isEditing}
+          >
+            {saveState === 'saving' ? 'Saving...' : 'Save Rules'}
+          </button>
           <div className={styles.summaryStatus}>{isLoading ? 'Loading rules...' : statusLabel}</div>
           <div className={styles.summaryStatus}>Auto-refresh: every 15s for positions/logs</div>
         </aside>
