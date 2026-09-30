@@ -56,17 +56,20 @@ export default function TopNav() {
           <Link href="/dashboard" className={styles.link}>
             Dashboard
           </Link>
+          <Link href="/portfolio" className={styles.link}>
+            Portfolio
+          </Link>
+          <Link href="/analytics" className={styles.link}>
+            Analytics
+          </Link>
           <Link href="/markets" className={styles.link}>
-            Markets
+            Markets News
           </Link>
           <Link href="/insights" className={styles.link}>
-            Insights
+            AI Insights
           </Link>
           <Link href="/automated" className={styles.link}>
-            Automated
-          </Link>
-          <Link href="/profile" className={styles.link}>
-            Settings
+            Auto Trade
           </Link>
         </nav>
 

@@ -4,7 +4,7 @@ import logging
 import os
 import time
 import json
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.auth import get_current_user
 from app.api.rate_limit import enforce_guest_llm_rate_limit
 from app.core.db import get_database
-from app.ml.news_fetcher import fetch_news_for_symbol, fetch_ohlcv
+from app.ml.news_fetcher import fetch_news_for_symbol, fetch_ohlcv, news_provider_status
 from app.ml.news_sentiment_analyzer import NewsSentimentAnalyzer, NewsSentimentAnalyzerError
 from app.ml.market_forecaster import MarketForecaster, MarketForecasterError
 from app.ml.trading_bot import AutomatedTradingBot, RiskParameterViolation
@@ -56,7 +56,22 @@ _FEATURE_LABEL_MAP = {
 }
 
 NEWS_CACHE_TTL_MINUTES = 60
+# Daily fade of news sentiment on days without new articles (0.7 = half-life of about 2 days).
+NEWS_SENTIMENT_DECAY = 0.7
 INSIGHTS_CACHE_TTL_MINUTES = 15
+
+# (owner, service) pairs whose stored API key could not be read, already reported in the log.
+_KEY_LOOKUP_WARNED: set = set()
+
+# Minimum model confidence (0-100) for a BUY/SELL insight to raise an alert / reach the trading bot.
+try:
+    BOT_MIN_SIGNAL_CONFIDENCE = int(os.environ.get('AJTRADE_BOT_MIN_CONFIDENCE', '70'))
+except (TypeError, ValueError):
+    BOT_MIN_SIGNAL_CONFIDENCE = 70
+
+# (owner, symbol) -> (monotonic fetch time, articles, FinBERT-scored articles) used by insight rebuilds,
+# so signals can refresh more often than news is fetched.
+_INSIGHT_NEWS_CACHE: Dict[Tuple[str, str], Tuple[float, List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -67,11 +82,11 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
-def _is_fresh(updated_at: Optional[datetime], ttl_minutes: int) -> bool:
+def _is_fresh(updated_at: Optional[datetime], ttl_minutes: float) -> bool:
     if updated_at is None:
         return False
     now = datetime.now(updated_at.tzinfo) if updated_at.tzinfo is not None else _utcnow()
-    return (now - updated_at) <= timedelta(minutes=int(ttl_minutes))
+    return (now - updated_at) <= timedelta(minutes=float(ttl_minutes))
 
 
 def _to_json_payload(value: Dict[str, Any]) -> str:
@@ -174,7 +189,10 @@ async def _write_news_cache(
                 "INSERT INTO news_cache (owner, symbol, cache_key, payload, updated_at) "
                 "VALUES (:owner, :symbol, :cache_key, CAST(:payload AS jsonb), now()) "
                 "ON CONFLICT (owner, symbol, cache_key) DO UPDATE SET "
-                "payload = EXCLUDED.payload, updated_at = now()"
+                "payload = EXCLUDED.payload, updated_at = now() "
+                # An empty fetch (quota hit, provider down) must not wipe articles fetched earlier.
+                "WHERE COALESCE(jsonb_array_length(EXCLUDED.payload->'articles'), 0) > 0 "
+                "OR COALESCE(jsonb_array_length(news_cache.payload->'articles'), 0) = 0"
             ),
             values={
                 'owner': owner,
@@ -214,6 +232,59 @@ async def _read_latest_news_cache_for_symbol(
         return _from_json_payload(row['payload'])
     except Exception:
         return None
+
+
+async def _read_saved_news_for_symbol(db, *, owner: str, symbol: str) -> Optional[Tuple[Dict[str, Any], Any]]:
+    """Most recent cached news payload for the symbol that has articles, regardless of age."""
+    try:
+        row = await db.fetch_one(
+            query=(
+                "SELECT payload, updated_at FROM news_cache "
+                "WHERE owner = :owner AND symbol = :symbol "
+                "AND COALESCE(jsonb_array_length(payload->'articles'), 0) > 0 "
+                "ORDER BY updated_at DESC LIMIT 1"
+            ),
+            values={'owner': owner, 'symbol': _normalize_symbol(symbol)},
+        )
+    except Exception as exc:
+        logger.debug('saved_news_lookup_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
+        return None
+    if not row:
+        return None
+    payload = _from_json_payload(row['payload'])
+    return (payload, row['updated_at']) if payload else None
+
+
+def _news_unavailable_reason() -> Optional[str]:
+    status = news_provider_status()
+    error = status.get('newsapi') or status.get('newsdata')
+    if not error:
+        return None
+    code = str(error.get('code') or '')
+    if code in {'rateLimited', 'apiKeyExhausted', 'http_429'}:
+        return 'the news API daily limit was reached'
+    if code in {'apiKeyInvalid', 'apiKeyDisabled', 'apiKeyMissing', 'http_401'}:
+        return 'the news API key was rejected'
+    return f"the news API returned an error ({code})"
+
+
+async def _with_saved_articles(db, *, owner: str, symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """When a news payload has no articles, show the last articles saved for the symbol (marked as saved)."""
+    if payload.get('articles') or int(payload.get('page') or 1) > 1:
+        return payload
+    saved = await _read_saved_news_for_symbol(db, owner=owner, symbol=symbol)
+    reason = _news_unavailable_reason()
+    if not saved:
+        return {**payload, 'news_note': f'No live news right now: {reason}.' if reason else None}
+    saved_payload, saved_at = saved
+    return {
+        **saved_payload,
+        'page': 1,
+        'has_more': False,
+        'stale': True,
+        'saved_at': saved_at.isoformat() if hasattr(saved_at, 'isoformat') else str(saved_at),
+        'news_note': f"Showing saved news{': ' + reason if reason else ' (no newer articles found)'}.",
+    }
 
 
 async def _read_insight_cache(
@@ -344,7 +415,7 @@ def _resolve_news_window(days: int, from_date: Optional[str], to_date: Optional[
             parsed_to = date.fromisoformat(str(to_date))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail='invalid_to_date') from exc
-        end_dt = datetime.combine(parsed_to, time.max)
+        end_dt = datetime.combine(parsed_to, dt_time.max)
 
     start_dt = end_dt - timedelta(days=max_days)
     if from_date:
@@ -352,7 +423,7 @@ def _resolve_news_window(days: int, from_date: Optional[str], to_date: Optional[
             parsed_from = date.fromisoformat(str(from_date))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail='invalid_from_date') from exc
-        start_dt = datetime.combine(parsed_from, time.min)
+        start_dt = datetime.combine(parsed_from, dt_time.min)
 
     if start_dt > end_dt:
         raise HTTPException(status_code=400, detail='from_date_must_be_before_to_date')
@@ -400,7 +471,17 @@ async def _get_api_key_for_owner(owner: str, service: str) -> Optional[str]:
 
         return crypto.decrypt_api_key(row["encrypted_blob"]).decode("utf-8")
     except Exception as exc:
-        logger.warning('service_key_lookup_failed owner=%s service=%s error=%s', owner, service, exc)
+        # Signals refresh every few minutes, so report each unreadable key once per process.
+        warn_key = (owner, str(service or '').lower())
+        if warn_key not in _KEY_LOOKUP_WARNED:
+            _KEY_LOOKUP_WARNED.add(warn_key)
+            logger.warning(
+                'service_key_lookup_failed owner=%s service=%s error=%s (an empty error usually means the key was '
+                'saved by a server with a different AJTRADE_DATA_KEY; re-save it in API Management)',
+                owner,
+                service,
+                type(exc).__name__,
+            )
         return None
 
 
@@ -479,10 +560,24 @@ def _build_sentiment_series(df_ohlcv: pd.DataFrame, scored_articles: List[Dict[s
 
     day_mean: Dict[pd.Timestamp, float] = {d: float(sum(vals) / len(vals)) for d, vals in scores_by_day.items() if vals}
 
-    # Align to OHLCV rows.
+    # Align to OHLCV rows. News mood lasts beyond the day it was published, and the free NewsAPI plan
+    # delivers articles about a day late, so days without articles carry the last value forward,
+    # fading by NEWS_SENTIMENT_DECAY per day (instead of dropping to 0 = "neutral").
+    article_days = sorted(day_mean)
     values: List[float] = []
+    carried = 0.0
+    last_day: Optional[pd.Timestamp] = None
+    pos = 0
     for d in idx:
-        values.append(float(day_mean.get(d, 0.0)))
+        # Fold in every article day up to this row (covers weekends/holidays between price rows).
+        while pos < len(article_days) and article_days[pos] <= d:
+            last_day = article_days[pos]
+            carried = day_mean[last_day]
+            pos += 1
+        if last_day is None:
+            values.append(0.0)
+        else:
+            values.append(float(carried * NEWS_SENTIMENT_DECAY ** max((d - last_day).days, 0)))
 
     return pd.Series(values, index=df_ohlcv.index, name="sentiment_score", dtype=float)
 
@@ -517,6 +612,50 @@ def _score_articles_finbert(analyzer: NewsSentimentAnalyzer, articles: List[Dict
         )
 
     return scored
+
+
+def _daily_sentiment_summary(scored: List[Dict[str, Any]], *, max_headlines: int = 3) -> List[Dict[str, Any]]:
+    """Per-day FinBERT sentiment from scored articles, for the Analytics heatmap.
+
+    Each day: average score (-1..+1), article counts (positive > +0.1, negative < -0.1, otherwise neutral)
+    and the headlines with the strongest scores.
+    """
+    days: Dict[str, Dict[str, Any]] = {}
+    for item in scored or []:
+        published = item.get('published_date')
+        if published is None:
+            continue
+        day = published.date() if hasattr(published, 'date') else published
+        key = str(day.isoformat() if hasattr(day, 'isoformat') else day)[:10]
+        try:
+            score = float(item.get('score'))
+        except (TypeError, ValueError):
+            continue
+        bucket = days.setdefault(key, {'scores': [], 'headlines': []})
+        bucket['scores'].append(score)
+        if item.get('title'):
+            bucket['headlines'].append(
+                {'title': item.get('title'), 'source': item.get('source'), 'url': item.get('url'), 'score': round(score, 4)}
+            )
+
+    summary = []
+    for key in sorted(days):
+        scores = days[key]['scores']
+        positive = sum(1 for s in scores if s > 0.1)
+        negative = sum(1 for s in scores if s < -0.1)
+        headlines = sorted(days[key]['headlines'], key=lambda h: abs(h['score']), reverse=True)[:max_headlines]
+        summary.append(
+            {
+                'date': key,
+                'avg': round(sum(scores) / len(scores), 4),
+                'count': len(scores),
+                'positive': positive,
+                'negative': negative,
+                'neutral': len(scores) - positive - negative,
+                'headlines': headlines,
+            }
+        )
+    return summary
 
 
 def _sentiment_label(avg_score: float) -> str:
@@ -773,7 +912,13 @@ async def _build_watch_asset_news(
     }
 
 
-async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[str]) -> Dict[str, Any]:
+async def _build_watch_asset_insight(
+    symbol: str,
+    owner: str,
+    api_key: Optional[str],
+    *,
+    news_ttl_minutes: float = NEWS_CACHE_TTL_MINUTES,
+) -> Dict[str, Any]:
     from app.api.analytics import get_asset_detail
     from app.api.market import get_historical_data
 
@@ -793,31 +938,36 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
     fallback_provider = news_creds.get('fallback_provider')
 
     articles: List[Dict[str, Any]] = []
-    if primary_key:
-        to_dt = datetime.utcnow()
-        from_dt = to_dt - timedelta(days=30)
-        articles = await run_in_threadpool(
-            fetch_news_for_symbol,
-            primary_key,
-            symbol,
-            from_dt,
-            to_dt,
-            25,
-            1,
-            asset.get('display_name') or symbol,
-            primary_provider or 'newsapi',
-            fallback_key,
-            fallback_provider,
-        )
+    scored: List[Dict[str, Any]] = []
+    news_cache_key = (owner, symbol)
+    cached_news = _INSIGHT_NEWS_CACHE.get(news_cache_key)
+    if cached_news and time.monotonic() - cached_news[0] <= float(news_ttl_minutes) * 60:
+        _, articles, scored = cached_news
+    else:
+        if primary_key:
+            to_dt = datetime.utcnow()
+            from_dt = to_dt - timedelta(days=30)
+            articles = await run_in_threadpool(
+                fetch_news_for_symbol,
+                primary_key,
+                symbol,
+                from_dt,
+                to_dt,
+                25,
+                1,
+                asset.get('display_name') or symbol,
+                primary_provider or 'newsapi',
+                fallback_key,
+                fallback_provider,
+            )
 
-    scored = await run_in_threadpool(_score_articles_finbert, _SENTIMENT_ANALYZER, articles, max_articles=25)
+        scored = await run_in_threadpool(_score_articles_finbert, _SENTIMENT_ANALYZER, articles, max_articles=25)
+        # Cache empty results too: news is fetched at most once per news TTL per asset, even when the
+        # provider has nothing or is rate-limited (retrying every rebuild only burns the daily quota).
+        _INSIGHT_NEWS_CACHE[news_cache_key] = (time.monotonic(), articles, scored)
 
-    cached_news_payload = await _read_latest_news_cache_for_symbol(
-        db,
-        owner=owner,
-        symbol=symbol,
-        ttl_minutes=NEWS_CACHE_TTL_MINUTES,
-    )
+    saved_news = await _read_saved_news_for_symbol(db, owner=owner, symbol=symbol)
+    cached_news_payload = saved_news[0] if saved_news else None
     cached_avg_sentiment = 0.0
     try:
         if cached_news_payload is not None:
@@ -828,22 +978,6 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
     if not scored and cached_news_payload:
         scored = _scored_items_from_cached_news_payload(cached_news_payload)
 
-    # If direct sentiment scoring is missing, explicitly trigger watchlist-news style pipeline
-    # so insights do not depend on market page cache/state.
-    if primary_key and not scored:
-        try:
-            fallback_news = await _build_watch_asset_news(symbol, news_creds, owner=owner, days=30, page=1, page_size=25)
-            fallback_scored = _scored_items_from_cached_news_payload(fallback_news)
-            if fallback_scored:
-                scored = fallback_scored
-                try:
-                    cached_avg_sentiment = float(fallback_news.get('avg_sentiment') or cached_avg_sentiment)
-                except Exception:
-                    pass
-        except Exception:
-            # Keep neutral fallback if secondary sentiment pass also fails.
-            pass
-
     sentiment_series = await run_in_threadpool(_build_sentiment_series, df, scored)
     latest_sentiment = float(sentiment_series.iloc[-1]) if len(sentiment_series) else float(cached_avg_sentiment)
 
@@ -851,9 +985,13 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
         sentiment_series = pd.Series([float(cached_avg_sentiment)] * len(sentiment_series), index=sentiment_series.index)
 
     signal = 'HOLD'
-    probability_up = 0.5
-    confidence = 50
+    probability_up: Optional[float] = None
+    confidence: Optional[int] = None
+    model_fallback = False
     rationale = []
+    drivers: List[Dict[str, Any]] = []
+    _default_forecaster = MarketForecaster()
+    thresholds = {'buy': _default_forecaster.buy_threshold, 'sell': _default_forecaster.sell_threshold}
     try:
         forecaster = MarketForecaster()
         await run_in_threadpool(forecaster.train_model, df, sentiment_series)
@@ -870,52 +1008,66 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
         ]
         for feature in (shap_expl.get('top_features') or [])[:3]:
             rationale.append(_build_natural_rationale_line(feature))
+        # Structured SHAP drivers for the Insights chart: signed impact_pct (+ pushes toward "up").
+        drivers = [
+            {
+                'feature': str(feat.get('feature')),
+                'label': _humanize_feature_name(feat.get('feature')),
+                'impact_pct': round(float(feat.get('impact_pct') or 0.0), 2),
+            }
+            for feat in (shap_expl.get('top_features') or [])[:5]
+        ]
         snippet = ' | '.join(
             [
                 f"{feat.get('feature')}={feat.get('impact_pct')}%"
                 for feat in (shap_expl.get('top_features') or [])[:3]
             ]
         ) if (shap_expl.get('top_features') or []) else f"Signal={signal}; ProbUp={probability_up:.4f}; Sentiment={latest_sentiment:.3f}"
+        # Thresholds on the same -1..+1 scale as raw_forecast_score (2 * P(up) - 1).
         record_forecaster_event(
             owner,
             symbol=symbol,
             raw_forecast_score=(probability_up * 2.0) - 1.0,
-            bull_threshold=0.2,
-            bear_threshold=-0.2,
+            bull_threshold=(forecaster.buy_threshold * 2.0) - 1.0,
+            bear_threshold=(forecaster.sell_threshold * 2.0) - 1.0,
             shap_snippet=snippet,
         )
-    except Exception:
+    except Exception as exc:
+        # The model could not be trained (e.g. too little history). Fall back to a plain rule, clearly
+        # labelled, without inventing a probability or confidence; the bot does not trade on it.
+        logger.warning('forecaster_unavailable symbol=%s error=%s', symbol, exc)
+        model_fallback = True
+        probability_up = None
+        confidence = None
         price_change_pct = float(asset.get('price_change_pct') or 0.0)
         outlook = _trend_outlook(price_change_pct, latest_sentiment)
         if latest_sentiment > 0.1 and price_change_pct > 0:
             signal = 'BUY'
-            probability_up = 0.62
         elif latest_sentiment < -0.1 and price_change_pct < 0:
             signal = 'SELL'
-            probability_up = 0.38
         else:
             signal = 'HOLD'
-            probability_up = 0.5
-        confidence = int(round(abs(latest_sentiment) * 50 + min(abs(price_change_pct), 10) * 5))
         rationale = [
+            "AI model unavailable for this asset; this is a rule-based estimate (price trend + news sentiment).",
             f"Outlook: {outlook}.",
             f"Recent price change is {price_change_pct:.2f}%.",
             f"Average news sentiment score is {latest_sentiment:.2f}.",
         ]
-        record_forecaster_event(
-            owner,
-            symbol=symbol,
-            raw_forecast_score=(probability_up * 2.0) - 1.0,
-            bull_threshold=0.2,
-            bear_threshold=-0.2,
-            shap_snippet=f"Fallback={signal}; ProbUp={probability_up:.4f}; Sentiment={latest_sentiment:.3f}",
-        )
 
     recommendation_map = {
         'BUY': 'Bullish',
         'SELL': 'Bearish',
         'HOLD': 'Neutral',
     }
+
+    closes = df['Close'].tail(30)
+    price_history = [
+        {'date': idx.date().isoformat() if hasattr(idx, 'date') else str(idx)[:10], 'close': round(float(value), 4)}
+        for idx, value in closes.items()
+    ]
+    daily_returns = df['Close'].pct_change().dropna().tail(30)
+    # Typical daily move (standard deviation of daily returns, %), used to size suggested stops.
+    volatility_pct = round(float(daily_returns.std() * 100), 3) if len(daily_returns) > 1 else None
 
     return {
         'symbol': symbol,
@@ -929,6 +1081,18 @@ async def _build_watch_asset_insight(symbol: str, owner: str, api_key: Optional[
         'latest_sentiment_score': latest_sentiment,
         'trend_summary': _trend_outlook(float(asset.get('price_change_pct') or 0.0), latest_sentiment),
         'rationale': rationale,
+        # True when the AI model could not run and the signal is a rule-based estimate.
+        'model_fallback': model_fallback,
+        # Per-day FinBERT sentiment of the articles behind this insight (Analytics heatmap).
+        'news_sentiment_daily': _daily_sentiment_summary(scored),
+        # For the Insights page: why the model decided (SHAP), recent prices, volatility and the
+        # probability thresholds the signal is based on.
+        'drivers': drivers,
+        'price_history': price_history,
+        'volatility_pct': volatility_pct,
+        'thresholds': thresholds,
+        # Identifies this signal so the trading bot can cap how often it acts on the same one.
+        'generated_at': datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -1376,7 +1540,7 @@ async def watchlist_news(
                 ttl_minutes=NEWS_CACHE_TTL_MINUTES,
             )
             if cached:
-                payload.append(cached)
+                payload.append(await _with_saved_articles(db, owner=owner, symbol=symbol, payload=cached))
                 continue
 
             fresh = await _build_watch_asset_news(
@@ -1400,7 +1564,7 @@ async def watchlist_news(
                 to_date=to_date,
                 payload=fresh,
             )
-            payload.append(fresh)
+            payload.append(await _with_saved_articles(db, owner=owner, symbol=symbol, payload=fresh))
         except Exception as e:
             logger.warning('watchlist_news_failed symbol=%s error=%s', symbol, e)
             payload.append({
@@ -1454,7 +1618,7 @@ async def watch_asset_news(
         ttl_minutes=NEWS_CACHE_TTL_MINUTES,
     )
     if cached:
-        return cached
+        return await _with_saved_articles(db, owner=owner, symbol=normalized_symbol, payload=cached)
 
     news_creds = await _get_news_credentials(owner)
     fresh = await _build_watch_asset_news(
@@ -1478,7 +1642,7 @@ async def watch_asset_news(
         to_date=to_date,
         payload=fresh,
     )
-    return fresh
+    return await _with_saved_articles(db, owner=owner, symbol=normalized_symbol, payload=fresh)
 
 
 @router.get('/watchlist/insights')
@@ -1511,18 +1675,20 @@ async def watchlist_insights(user=Depends(get_current_user)):
             payload.append(fresh)
         except Exception as e:
             logger.warning('watchlist_insight_failed symbol=%s error=%s', symbol, e)
+            # No insight could be built: report it as unavailable rather than a neutral-looking signal.
             payload.append({
                 'symbol': symbol,
                 'display_name': symbol,
-                'signal': 'HOLD',
-                'recommendation': 'Neutral',
-                'confidence': 0,
-                'probability_up': 0.5,
-                'latest_price': 0.0,
-                'price_change_pct': 0.0,
-                'latest_sentiment_score': 0.0,
+                'signal': 'N/A',
+                'recommendation': 'Unavailable',
+                'confidence': None,
+                'probability_up': None,
+                'latest_price': None,
+                'price_change_pct': None,
+                'latest_sentiment_score': None,
                 'trend_summary': 'Insight generation is temporarily unavailable.',
                 'rationale': ['Price history could not be loaded for this symbol yet.'],
+                'unavailable': True,
             })
     return payload
 
@@ -1530,11 +1696,13 @@ async def watchlist_insights(user=Depends(get_current_user)):
 async def refresh_watchlist_cache_for_owner(
     owner: str,
     *,
-    news_ttl_minutes: int = NEWS_CACHE_TTL_MINUTES,
-    insights_ttl_minutes: int = INSIGHTS_CACHE_TTL_MINUTES,
+    news_ttl_minutes: float = NEWS_CACHE_TTL_MINUTES,
+    insights_ttl_minutes: float = INSIGHTS_CACHE_TTL_MINUTES,
     alert_callback: Optional[Callable[[str, str, str, Dict[str, Any]], Any]] = None,
+    insight_callback: Optional[Callable[[str, str, Dict[str, Any]], Any]] = None,
 ) -> Dict[str, Any]:
-    """Refresh cached watchlist news/insights for an owner, and emit alerts on strong BUY/SELL signals."""
+    """Refresh cached watchlist news/insights for an owner, emit alerts on strong BUY/SELL signals,
+    and pass every insight to `insight_callback` (the trading bot)."""
     symbols = await _get_watchlist_symbols(owner)
     if not symbols:
         return {'owner': owner, 'symbols': 0, 'news_refreshed': 0, 'insights_refreshed': 0, 'alerts': []}
@@ -1593,20 +1761,24 @@ async def refresh_watchlist_cache_for_owner(
                 symbol=symbol,
                 ttl_minutes=insights_ttl_minutes,
             )
-            if cached_insight:
+            # Insights cached before 'generated_at' existed are rebuilt once so they carry a signal id.
+            if cached_insight and cached_insight.get('generated_at'):
                 insight_payload = cached_insight
             else:
-                insight_payload = await _build_watch_asset_insight(symbol, owner, api_key)
+                insight_payload = await _build_watch_asset_insight(
+                    symbol, owner, api_key, news_ttl_minutes=news_ttl_minutes
+                )
                 await _write_insight_cache(db, owner=owner, symbol=symbol, payload=insight_payload)
                 insights_refreshed += 1
 
             signal = str(insight_payload.get('signal') or '').upper()
             confidence = int(insight_payload.get('confidence') or 0)
-            if signal in {'BUY', 'SELL'} and confidence >= 70:
+            if signal in {'BUY', 'SELL'} and confidence >= BOT_MIN_SIGNAL_CONFIDENCE:
                 alert_payload = {
                     'owner': owner,
                     'symbol': symbol,
                     'signal': signal,
+                    'generated_at': insight_payload.get('generated_at'),
                     'confidence': confidence,
                     'probability_up': insight_payload.get('probability_up'),
                     'latest_price': insight_payload.get('latest_price'),
@@ -1617,6 +1789,12 @@ async def refresh_watchlist_cache_for_owner(
                     result = alert_callback(owner, symbol, signal, alert_payload)
                     if hasattr(result, '__await__'):
                         await result
+
+            # Every insight (including HOLD) goes to the bot; its per-asset strategy decides what to do.
+            if insight_callback is not None:
+                result = insight_callback(owner, symbol, insight_payload)
+                if hasattr(result, '__await__'):
+                    await result
         except Exception as e:
             logger.warning('background_insight_refresh_failed owner=%s symbol=%s error=%s', owner, symbol, e)
 

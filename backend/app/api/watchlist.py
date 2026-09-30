@@ -13,22 +13,33 @@ _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,24}$")
 
 
 def _normalize_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
+    # "SOL/USD" (Alpaca's crypto form) -> "SOL-USD" (the form used across the app).
+    return (symbol or "").strip().upper().replace("/", "-")
 
 
-async def _validate_symbol(symbol: str) -> None:
+async def _validate_symbol(symbol: str) -> str:
+    """Returns the symbol to store: the input, or "<COIN>-USD" when a bare coin name isn't a Yahoo ticker."""
+    from app.api.market import get_market_price
+    from app.core.alpaca import ALPACA_CRYPTO_BASES
+
     symbol = _normalize_symbol(symbol)
     if not symbol or not _SYMBOL_RE.match(symbol):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid ticker symbol")
 
-    try:
-        from app.api.market import get_market_price
-
-        await get_market_price(symbol)
-    except HTTPException as exc:
-        if exc.status_code in {status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Ticker {symbol} is not available") from exc
-        raise
+    candidates = [symbol]
+    if symbol in ALPACA_CRYPTO_BASES:
+        candidates.append(f"{symbol}-USD")
+    for candidate in candidates:
+        try:
+            await get_market_price(candidate)
+            return candidate
+        except HTTPException as exc:
+            if exc.status_code not in {status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND}:
+                raise
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Ticker {symbol} is not available (for crypto, use the -USD pair, e.g. BTC-USD)",
+    )
 
 
 def _maybe_schema_hint(error: Exception, table: str) -> Optional[str]:
@@ -90,8 +101,7 @@ async def list_watchlist(user=Depends(get_current_user)):
 
 @router.post('', status_code=status.HTTP_201_CREATED)
 async def add_watchlist_item(payload: WatchlistItemIn, user=Depends(get_current_user)):
-    symbol = _normalize_symbol(payload.symbol)
-    await _validate_symbol(symbol)
+    symbol = await _validate_symbol(payload.symbol)
 
     try:
         db = get_database()
@@ -126,8 +136,7 @@ async def add_watchlist_item(payload: WatchlistItemIn, user=Depends(get_current_
 
 @router.put('/{item_id}')
 async def update_watchlist_item(item_id: str, payload: WatchlistItemIn, user=Depends(get_current_user)):
-    symbol = _normalize_symbol(payload.symbol)
-    await _validate_symbol(symbol)
+    symbol = await _validate_symbol(payload.symbol)
 
     try:
         db = get_database()

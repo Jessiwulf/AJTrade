@@ -1,0 +1,854 @@
+.page {
+  display: grid;
+  gap: 16px;
+}
+
+/* Allocation series: validated categorical order (dataviz reference palette, light mode). */
+.s1 { background: #2a78d6; }
+.s2 { background: #eb6834; }
+.s3 { background: #1baf7a; }
+.s4 { background: #eda100; }
+.s5 { background: #e87ba4; }
+.s6 { background: #008300; }
+.s7 { background: #4a3aa7; }
+.sOther { background: #8b93a1; }
+.sCash {
+  background: repeating-linear-gradient(135deg, #cbd2dc 0 4px, #e2e7ee 4px 8px);
+}
+
+.up { color: var(--aj-positive); }
+.down { color: var(--aj-negative); }
+.flat { color: var(--aj-text-muted); }
+
+.muted {
+  margin: 0;
+  font-size: 13px;
+  color: var(--aj-text-muted);
+}
+
+.small {
+  font-size: 12px;
+  color: var(--aj-text-muted);
+}
+
+.small.up { color: var(--aj-positive); }
+.small.down { color: var(--aj-negative); }
+
+.link {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--aj-indigo);
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+/* Message banner */
+/* Sticky so results of actions further down the page (e.g. manual adjustments) stay visible. */
+.banner {
+  position: sticky;
+  top: 12px;
+  z-index: 30;
+  box-shadow: var(--aj-shadow-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--aj-border);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bannerOk {
+  background: color-mix(in srgb, var(--aj-positive) 8%, var(--aj-bg) 92%);
+  border-color: color-mix(in srgb, var(--aj-positive) 35%, var(--aj-border) 65%);
+  color: var(--aj-text);
+}
+
+.bannerError {
+  background: color-mix(in srgb, var(--aj-negative) 8%, var(--aj-bg) 92%);
+  border-color: color-mix(in srgb, var(--aj-negative) 35%, var(--aj-border) 65%);
+  color: var(--aj-negative);
+}
+
+.bannerClose {
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* Summary tiles */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.stat {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 16px 16px 14px;
+  border-radius: var(--aj-radius-md);
+  border: 1px solid var(--aj-border);
+  background: var(--aj-bg);
+  box-shadow: var(--aj-shadow-sm);
+}
+
+/* AJTrade amber accent strip on each tile. */
+.stat::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--aj-cta-gradient);
+}
+
+/* Lead tile: same card as the others, set apart only by a larger navy figure. */
+.stat:first-child .statValue {
+  color: var(--aj-indigo);
+  font-size: 28px;
+}
+
+.statLabel {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aj-text-muted);
+}
+
+.statValue {
+  font-size: 24px;
+  font-weight: 950;
+  letter-spacing: -0.02em;
+  color: var(--aj-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.statValue.up { color: var(--aj-positive); }
+.statValue.down { color: var(--aj-negative); }
+
+.statSub {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.statHint {
+  font-size: 12px;
+  color: var(--aj-text-muted);
+}
+
+/* Layout */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+
+.mainCol,
+.sideCol {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+.card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  background: var(--aj-bg);
+  border: 1px solid var(--aj-border);
+  border-radius: var(--aj-radius-md);
+  box-shadow: var(--aj-shadow-sm);
+  padding: 16px;
+}
+
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cardTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--aj-indigo);
+}
+
+.cardTitle::before {
+  content: '';
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--aj-cta-gradient);
+}
+
+/* Allocation */
+.alloc {
+  display: grid;
+  gap: 12px;
+}
+
+.allocBar {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--aj-surface);
+}
+
+.allocSeg {
+  min-width: 3px;
+  transition: opacity 0.15s ease;
+}
+
+.allocDim {
+  opacity: 0.35;
+}
+
+.allocLegend {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  /* Each entry is only as wide as its content and entries wrap onto more rows as holdings are added
+     (at most 7 holdings + Other + Cash). */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+}
+
+.allocLegend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--aj-text);
+  transition: opacity 0.15s ease;
+}
+
+.swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.allocName {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 800;
+}
+
+.allocPct {
+  margin-left: 2px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.allocValue {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--aj-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Holdings table */
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  min-width: 820px;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--aj-border);
+  text-align: left;
+  font-size: 13px;
+  color: var(--aj-text);
+  vertical-align: middle;
+}
+
+.table th {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--aj-text-muted);
+  font-weight: 700;
+}
+
+.table tbody tr:hover {
+  background: var(--aj-surface);
+}
+
+.table td.up,
+.table td.down {
+  font-weight: 800;
+}
+
+.table td.up .small { color: var(--aj-positive); }
+.table td.down .small { color: var(--aj-negative); }
+
+.num {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.assetCell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ticker {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--aj-indigo), var(--aj-ink));
+  color: var(--aj-cta-from);
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.02em;
+}
+
+.assetSymbol {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 900;
+}
+
+.assetName {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--aj-text-muted);
+}
+
+.botBadge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+  color: var(--aj-ink);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.weight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 110px;
+}
+
+.weightTrack {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--aj-surface);
+  border: 1px solid var(--aj-border-soft);
+  overflow: hidden;
+}
+
+.weightTrack span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--aj-cta-gradient);
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.chipBtn {
+  border: 1px solid var(--aj-border);
+  border-radius: 999px;
+  background: var(--aj-bg);
+  color: var(--aj-text);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.chipBtn:hover {
+  border-color: var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+}
+
+.iconBtn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--aj-text-muted);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.iconBtn:hover {
+  background: var(--aj-surface);
+  border-color: var(--aj-border);
+}
+
+.iconDanger:hover {
+  color: var(--aj-negative);
+}
+
+.empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 24px 12px;
+  text-align: center;
+  border: 1px dashed var(--aj-border-strong);
+  border-radius: 14px;
+}
+
+.empty p {
+  margin: 0;
+}
+
+.emptyActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 6px;
+}
+
+/* Activity */
+.activity {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+}
+
+.activityItem {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--aj-border);
+  font-size: 13px;
+}
+
+.activityItem:last-child {
+  border-bottom: 0;
+}
+
+.activityMain {
+  min-width: 0;
+}
+
+.activityRight {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sideTag {
+  min-width: 44px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.sideBuy {
+  color: var(--aj-positive);
+  background: color-mix(in srgb, var(--aj-positive) 10%, var(--aj-bg) 90%);
+}
+
+.sideSell {
+  color: var(--aj-negative);
+  background: color-mix(in srgb, var(--aj-negative) 10%, var(--aj-bg) 90%);
+}
+
+/* Trade ticket */
+.ticket {
+  border-color: var(--aj-accent-border-strong);
+  background: linear-gradient(180deg, var(--aj-accent-soft), var(--aj-bg) 140px);
+}
+
+.sideToggle,
+.modeToggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--aj-surface);
+  border: 1px solid var(--aj-border);
+}
+
+.sideToggle button,
+.modeToggle button {
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  padding: 8px 10px;
+  font-weight: 900;
+  color: var(--aj-text-muted);
+  cursor: pointer;
+}
+
+.modeToggle {
+  padding: 2px;
+  border-radius: 10px;
+}
+
+.modeToggle button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.modeToggle button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Actions wear the AJTrade brand (amber buy, navy sell); green/red stay reserved for gains/losses. */
+.sideBuyOn {
+  background: var(--aj-cta-gradient) !important;
+  color: var(--aj-ink) !important;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.35);
+}
+
+.sideSellOn {
+  background: linear-gradient(135deg, var(--aj-indigo), var(--aj-ink)) !important;
+  color: #fff !important;
+  box-shadow: 0 2px 8px rgba(30, 58, 138, 0.3);
+}
+
+.modeOn {
+  background: var(--aj-bg) !important;
+  color: var(--aj-text) !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.fieldLabel {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aj-text-muted);
+}
+
+.input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--aj-surface);
+  color: var(--aj-text);
+  font: inherit;
+}
+
+.input:focus,
+.moneyInput:focus-within {
+  outline: none;
+  background: var(--aj-bg);
+  border-color: var(--aj-cta-to);
+  box-shadow: 0 0 0 3px var(--aj-focus);
+}
+
+.moneyInput {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 12px;
+  padding: 0 12px;
+  background: var(--aj-surface);
+  color: var(--aj-text-muted);
+}
+
+.moneyInput input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  padding: 10px 0;
+  background: transparent;
+  font: inherit;
+  color: var(--aj-text);
+  outline: none;
+}
+
+.quoteLine {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: -4px;
+  font-size: 12px;
+  color: var(--aj-text-muted);
+}
+
+.quoteLine strong {
+  color: var(--aj-text);
+}
+
+.amountHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.amountRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.estimate {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--aj-surface);
+}
+
+.estimate div,
+.kvList div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.estimate dt,
+.kvList dt {
+  color: var(--aj-text-muted);
+}
+
+.estimate dd,
+.kvList dd {
+  margin: 0;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.warn {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--aj-negative);
+}
+
+.submit {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 15px;
+  font-weight: 950;
+  color: #fff;
+  cursor: pointer;
+}
+
+.submitBuy {
+  background: var(--aj-cta-gradient);
+  color: var(--aj-ink);
+  box-shadow: 0 8px 20px rgba(245, 158, 11, 0.3);
+}
+
+.submitSell {
+  background: linear-gradient(135deg, var(--aj-indigo), var(--aj-ink));
+  box-shadow: 0 8px 20px rgba(30, 58, 138, 0.28);
+}
+
+.submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Paper account */
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-border);
+  font-size: 11px;
+  font-weight: 900;
+  color: var(--aj-text-muted);
+}
+
+.statusPill i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--aj-text-muted);
+}
+
+.statusOn {
+  color: var(--aj-positive);
+  border-color: color-mix(in srgb, var(--aj-positive) 35%, var(--aj-border) 65%);
+}
+
+.statusOn i {
+  background: var(--aj-positive);
+}
+
+.kvList {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.btnRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.primary,
+.secondary,
+.ghost {
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.primary {
+  border: 1px solid var(--aj-accent-border-strong);
+  background: var(--aj-cta-gradient);
+  color: var(--aj-ink);
+}
+
+.secondary {
+  border: 1px solid var(--aj-border-strong);
+  background: var(--aj-bg);
+  color: var(--aj-text);
+}
+
+.ghost {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--aj-text-muted);
+}
+
+/* Sync button when local cash and holdings already match Alpaca. */
+.syncDone {
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-weight: 900;
+  cursor: pointer;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-surface);
+  color: var(--aj-text-muted);
+}
+
+.primary:disabled,
+.secondary:disabled,
+.ghost:disabled,
+.syncDone:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* A link styled as a button (e.g. "Add Alpaca keys"). */
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+/* First-run */
+.initCard {
+  justify-items: center;
+  text-align: center;
+  padding: 36px 20px;
+}
+
+.initIcon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: var(--aj-cta-gradient);
+  color: var(--aj-ink);
+  font-size: 24px;
+  font-weight: 950;
+}
+
+.initTitle {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 950;
+  color: var(--aj-text);
+}
+
+.initRow {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  width: min(420px, 100%);
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .initRow {
+    flex-direction: column;
+  }
+}

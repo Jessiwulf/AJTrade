@@ -72,6 +72,140 @@
   color: var(--aj-text-muted);
 }
 
+.labelRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.infoTip {
+  position: relative;
+  display: inline-flex;
+}
+
+.infoBtn {
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+  color: var(--aj-indigo);
+  font-size: 11px;
+  font-weight: 900;
+  font-style: italic;
+  font-family: Georgia, serif;
+  line-height: 1;
+  cursor: help;
+  transition: background 0.2s, transform 0.2s;
+}
+
+.infoTip:hover .infoBtn,
+.infoBtn:focus-visible {
+  background: var(--aj-cta-gradient);
+  transform: scale(1.08);
+}
+
+.tooltip {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 10px);
+  left: -12px;
+  width: 300px;
+  max-width: calc(100vw - 48px);
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--aj-radius-sm);
+  background: var(--aj-bg);
+  border: 1px solid var(--aj-border);
+  box-shadow: var(--aj-shadow-md);
+  color: var(--aj-text);
+  font-size: 13px;
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: normal;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+}
+
+.tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 16px;
+  width: 10px;
+  height: 10px;
+  background: var(--aj-bg);
+  border-left: 1px solid var(--aj-border);
+  border-top: 1px solid var(--aj-border);
+  transform: rotate(45deg);
+}
+
+.infoTip:hover .tooltip,
+.infoTip:focus-within .tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  /* Lets the pointer move into the tooltip (and scroll it) without it closing. */
+  pointer-events: auto;
+}
+
+/* Long tooltips (strategy list): wider, and capped to the window so they scroll instead of overflowing. */
+.tooltipWide {
+  width: 440px;
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The arrow sits outside the box and would be clipped by the scroll container. */
+.tooltipWide::before {
+  display: none;
+}
+
+.tooltipRules {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--aj-text);
+}
+
+.tooltipFoot {
+  font-size: 11px;
+  color: var(--aj-text-muted);
+}
+
+.tooltipTitle {
+  color: var(--aj-indigo);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.tooltipItem {
+  display: grid;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  color: var(--aj-text-muted);
+}
+
+.tooltipItem strong {
+  color: var(--aj-indigo);
+}
+
+.tooltipItemActive {
+  background: var(--aj-accent-soft);
+  border-color: var(--aj-accent-border);
+}
+
 .select,
 .input {
   width: 100%;
@@ -88,19 +222,686 @@
   align-items: center;
 }
 
+.sliderRowToggle {
+  grid-template-columns: 1fr auto auto;
+}
+
 .range {
   width: 100%;
 }
 
-.pill {
-  padding: 8px 10px;
+.sliderRowOff .range {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pctBoxOff {
+  justify-content: center;
+  color: var(--aj-text-muted);
+  cursor: default;
+}
+
+.pctBox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 12px;
   border-radius: 999px;
   background: var(--aj-surface);
   border: 1px solid var(--aj-border);
   font-weight: 900;
   color: var(--aj-text);
-  min-width: 86px;
+  min-width: 96px;
+  cursor: text;
+}
+
+.pctBox:focus-within {
+  border-color: var(--aj-accent-border-strong);
+  box-shadow: 0 0 0 3px var(--aj-focus);
+}
+
+.pctInput {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
   text-align: center;
+  outline: none;
+  -moz-appearance: textfield;
+}
+
+.pctInput::-webkit-outer-spin-button,
+.pctInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.tooltipRange {
+  padding-top: 8px;
+  border-top: 1px solid var(--aj-border);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--aj-indigo);
+}
+
+/* Bot behavior preview */
+.preview {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--aj-border);
+  display: grid;
+  gap: 10px;
+}
+
+.previewStatus {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-surface);
+}
+
+.previewStatusBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.statusDot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--aj-text-muted);
+}
+
+.previewStatusOn {
+  border-color: var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+}
+
+.previewStatusOn .statusDot {
+  background: var(--aj-cta-to);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--aj-cta-to) 55%, transparent);
+  animation: statusPulse 1.8s ease-out infinite;
+}
+
+@keyframes statusPulse {
+  to {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .previewStatusOn .statusDot {
+    animation: none;
+  }
+}
+
+.previewStatusTitle {
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--aj-text);
+}
+
+.previewStatusText {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--aj-text-muted);
+  line-height: 1.5;
+}
+
+.unsavedBadge {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+  color: var(--aj-ink);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* Collapsible sections */
+.collapse {
+  border: 1px solid var(--aj-border);
+  border-radius: 14px;
+  background: var(--aj-bg);
+}
+
+.collapseSummary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 14px;
+}
+
+.collapseSummary::-webkit-details-marker {
+  display: none;
+}
+
+.collapseSummary:hover {
+  background: var(--aj-surface);
+}
+
+.collapseSummary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--aj-focus);
+}
+
+.collapseChevron {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--aj-text-muted);
+  border-bottom: 2px solid var(--aj-text-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.18s ease;
+}
+
+.collapse[open] > .collapseSummary .collapseChevron {
+  transform: rotate(45deg);
+}
+
+.collapseTitle {
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--aj-text);
+}
+
+.collapseMeta {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--aj-text-muted);
+  text-align: right;
+}
+
+.collapseBody {
+  display: grid;
+  gap: 12px;
+  padding: 2px 14px 14px;
+}
+
+/* Trading rules */
+.previewRules {
+  display: grid;
+  gap: 8px;
+}
+
+.ruleRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--aj-text);
+  line-height: 1.45;
+}
+
+.ruleTag {
+  flex: none;
+  min-width: 64px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-border);
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.ruleBuy .ruleTag {
+  color: var(--aj-positive);
+  border-color: color-mix(in srgb, var(--aj-positive) 45%, var(--aj-border) 55%);
+}
+
+.ruleSell .ruleTag {
+  color: var(--aj-negative);
+  border-color: color-mix(in srgb, var(--aj-negative) 45%, var(--aj-border) 55%);
+}
+
+.ruleHold .ruleTag {
+  color: var(--aj-text-muted);
+}
+
+/* Exit tiles */
+.exitTiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.exitTile {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--aj-border);
+  border-left-width: 3px;
+  font-size: 12px;
+  color: var(--aj-text-muted);
+  line-height: 1.45;
+}
+
+.exitTile strong {
+  font-size: 16px;
+  font-weight: 900;
+  color: var(--aj-text);
+}
+
+.exitTileLabel {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--aj-text-muted);
+}
+
+.exitTileTp {
+  border-left-color: var(--aj-positive);
+}
+
+.exitTileTrail {
+  border-left-color: var(--aj-cta-to);
+}
+
+.exitTileSl {
+  border-left-color: var(--aj-negative);
+}
+
+.exitTileOff {
+  border-left-color: var(--aj-border-strong);
+  background: var(--aj-surface);
+}
+
+.exitTileOff strong {
+  color: var(--aj-text-muted);
+}
+
+/* Live position gauge */
+.gaugeCard {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-bg);
+}
+
+.gaugeTitle {
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--aj-text);
+}
+
+.gaugeSub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--aj-text-muted);
+}
+
+.gauge {
+  position: relative;
+  height: 10px;
+  margin: 26px 0 0;
+  border-radius: 999px;
+  background: var(--aj-surface);
+  border: 1px solid var(--aj-border-soft);
+}
+
+.gaugeLoss,
+.gaugeGain {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.gaugeLoss {
+  background: color-mix(in srgb, var(--aj-negative) 18%, transparent);
+}
+
+.gaugeGain {
+  background: color-mix(in srgb, var(--aj-positive) 18%, transparent);
+}
+
+.gaugeTick {
+  position: absolute;
+  top: -5px;
+  width: 2px;
+  height: 18px;
+  margin-left: -1px;
+  border-radius: 2px;
+}
+
+.gaugeTickSl {
+  background: var(--aj-negative);
+}
+
+.gaugeTickEntry {
+  background: var(--aj-text-muted);
+}
+
+.gaugeTickTp {
+  background: var(--aj-positive);
+}
+
+.gaugeTickTrail {
+  background: var(--aj-cta-to);
+}
+
+.gaugeNow {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 999px;
+  background: var(--aj-indigo);
+  border: 2px solid var(--aj-bg);
+  box-shadow: 0 0 0 1px var(--aj-indigo);
+}
+
+.gaugeNowLabel {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 900;
+  color: var(--aj-indigo);
+}
+
+.gaugeNowLabelEnd {
+  left: auto;
+  right: -2px;
+  transform: none;
+}
+
+.gaugeNowLabelStart {
+  left: -2px;
+  transform: none;
+}
+
+.gaugeLabels {
+  position: relative;
+  height: 30px;
+  font-size: 11px;
+  color: var(--aj-text-muted);
+}
+
+.gaugeLabels span {
+  position: absolute;
+  transform: translateX(-50%);
+  text-align: center;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.gaugeLabels .gaugeLabelStart {
+  transform: none;
+  text-align: left;
+}
+
+.gaugeLabels .gaugeLabelEnd {
+  transform: translateX(-100%);
+  text-align: right;
+}
+
+.gaugeMessage {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--aj-text);
+  background: var(--aj-bg);
+  border: 1px solid var(--aj-border-strong);
+}
+
+.gaugeMessage_warn {
+  background: var(--aj-accent-soft);
+  border: 1px solid var(--aj-accent-border);
+}
+
+/* Example chart */
+.chartToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.scenarioRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.scenarioBtn {
+  border: 1px solid var(--aj-border);
+  border-radius: 999px;
+  background: var(--aj-surface);
+  color: var(--aj-text-muted);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.scenarioBtnActive {
+  color: var(--aj-indigo);
+  border-color: var(--aj-accent-border);
+  background: var(--aj-accent-soft);
+}
+
+.chartLegend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--aj-text-muted);
+}
+
+.chartLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legendSwatch {
+  display: inline-block;
+  width: 18px;
+  height: 0;
+  border-top: 2px solid;
+}
+
+.swPrice {
+  border-top-color: var(--aj-indigo);
+}
+
+.swTrail {
+  border-top-color: var(--aj-cta-to);
+  border-top-style: dotted;
+  border-top-width: 3px;
+}
+
+.legendDot,
+.outcomeDot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+}
+
+.dotBuy {
+  background: var(--aj-positive);
+}
+
+.dotSell {
+  background: var(--aj-negative);
+}
+
+.dotHold {
+  background: var(--aj-text-muted);
+}
+
+.chartWrap {
+  position: relative;
+  width: 100%;
+}
+
+.chartSvg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.chartGrid {
+  stroke: var(--aj-border-soft);
+  stroke-width: 1;
+}
+
+.chartAxis {
+  fill: var(--aj-text-muted);
+  font-size: 11px;
+}
+
+.chartLabel {
+  fill: var(--aj-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.chartEntry {
+  stroke: var(--aj-border-strong);
+  stroke-width: 1.5;
+}
+
+.chartTp {
+  stroke: var(--aj-positive);
+  stroke-width: 1.5;
+  stroke-dasharray: 8 4;
+}
+
+.chartSl {
+  stroke: var(--aj-negative);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+}
+
+.chartTrail {
+  fill: none;
+  stroke: var(--aj-cta-to);
+  stroke-width: 2.5;
+  stroke-dasharray: 2 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chartPrice {
+  fill: none;
+  stroke: var(--aj-indigo);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chartBuyDot,
+.chartSellDot,
+.chartHoverDot {
+  stroke: var(--aj-bg);
+  stroke-width: 2;
+}
+
+.chartBuyDot {
+  fill: var(--aj-positive);
+}
+
+.chartSellDot {
+  fill: var(--aj-negative);
+}
+
+.chartHoverDot {
+  fill: var(--aj-indigo);
+}
+
+.chartCrosshair {
+  stroke: var(--aj-border-strong);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chartTooltip {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--aj-bg);
+  border: 1px solid var(--aj-border);
+  box-shadow: var(--aj-shadow-md);
+  font-size: 12px;
+  color: var(--aj-text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.chartTooltip strong {
+  color: var(--aj-text);
+}
+
+.previewOutcome {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--aj-text);
+}
+
+.previewFootnote {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--aj-text-muted);
+}
+
+.previewTable summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--aj-indigo);
+}
+
+.previewTable .table {
+  min-width: 0;
+  margin-top: 8px;
+}
+
+@media (max-width: 720px) {
+  .exitTiles {
+    grid-template-columns: 1fr;
+  }
+
+  .collapseMeta {
+    display: none;
+  }
+}
+
+.summaryNote {
+  font-size: 12px;
+  color: var(--aj-text-muted);
 }
 
 .summary {
@@ -181,6 +982,78 @@
 .saveBtn:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+.saveRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.saveRow .saveBtn {
+  margin-top: 0;
+}
+
+.undoBtn {
+  border: 1px solid var(--aj-border-strong);
+  border-radius: 999px;
+  background: var(--aj-bg);
+  color: var(--aj-text);
+  font-weight: 800;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.undoBtn:hover:not(:disabled) {
+  background: var(--aj-surface);
+}
+
+.undoBtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Banner shown after "Automate" on AI Insights */
+.autoNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--aj-radius-md);
+  border: 1px solid var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+  color: var(--aj-text);
+}
+
+.autoNoticeBody {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.autoNoticeBody strong {
+  color: var(--aj-indigo);
+  font-size: 14px;
+}
+
+.autoNoticeBody ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  color: var(--aj-text-muted);
+  font-size: 12px;
+}
+
+.autoNoticeClose {
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--aj-text-muted);
+  cursor: pointer;
 }
 
 .tabRow {
@@ -318,6 +1191,11 @@
   background: var(--aj-bg);
   box-shadow: var(--aj-shadow-sm);
   transition: transform 160ms ease;
+}
+
+.switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .switchOn {

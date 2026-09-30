@@ -162,7 +162,7 @@ export default function MarketsPage() {
   const isRecentNewsActive = !hasCustomDateRange && lookbackDays === 7
 
   return (
-    <AppShell title="Markets" subtitle="News and sentiment for your current watchlist">
+    <AppShell title="Markets News" subtitle="News and sentiment for your current watchlist">
       <div className={styles.page}>
         <section className={styles.toolbar}>
           <div className={styles.filterGroup}>
@@ -252,6 +252,13 @@ export default function MarketsPage() {
               </div>
             </header>
 
+            {item.news_note ? (
+              <p className={styles.noArticles}>
+                {item.news_note}
+                {item.stale && item.saved_at ? ` Last fetched ${formatPublishedAt(item.saved_at)}.` : ''}
+              </p>
+            ) : null}
+
             {item.articles?.length ? (
               <div className={styles.articleGrid}>
                 {item.articles.map((article, index) => (
@@ -268,7 +275,9 @@ export default function MarketsPage() {
                 ))}
               </div>
             ) : (
-              <p className={styles.noArticles}>No live articles were returned for this asset in the selected range. Check your NewsAPI key in API Management or choose a different date range.</p>
+              <p className={styles.noArticles}>
+                No articles found for this asset in the selected range. The free NewsAPI plan only searches about the last 30 days.
+              </p>
             )}
 
             <div className={styles.articleActions}>

@@ -15,6 +15,14 @@ router = APIRouter()
 _TELEMETRY_SCHEMA_READY = False
 
 
+def _forecaster_thresholds() -> tuple:
+    """MarketForecaster's BUY/SELL probability thresholds on the -1..+1 score scale (2 * P(up) - 1)."""
+    from app.ml.market_forecaster import MarketForecaster
+
+    forecaster = MarketForecaster()
+    return (forecaster.buy_threshold * 2.0) - 1.0, (forecaster.sell_threshold * 2.0) - 1.0
+
+
 async def _ensure_telemetry_schema() -> None:
     global _TELEMETRY_SCHEMA_READY
     if _TELEMETRY_SCHEMA_READY:
@@ -374,13 +382,15 @@ async def get_forecaster_monitor(user=Depends(get_current_user)):
         values={'owner': owner},
     )
 
+    # The forecaster's actual thresholds (events stored before this fix carry a wrong fixed +/-0.2).
+    bull_threshold, bear_threshold = _forecaster_thresholds()
     logs = [
         {
             'timestamp': row['created_at'].timestamp() if row['created_at'] else None,
             'asset': row['asset_symbol'],
             'raw_forecast_score': float(row['raw_forecast_score'] or 0.0),
-            'bull_threshold': float(row['bull_threshold'] or 0.2),
-            'bear_threshold': float(row['bear_threshold'] or -0.2),
+            'bull_threshold': bull_threshold,
+            'bear_threshold': bear_threshold,
             'treeshap_log': row['treeshap_log'] or '',
         }
         for row in rows
@@ -404,7 +414,10 @@ async def get_forecaster_monitor(user=Depends(get_current_user)):
             if not isinstance(payload, dict):
                 continue
 
-            probability_up = float(payload.get('probability_up') or 0.5)
+            # Only insights the model actually produced (rule-based fallbacks have no probability).
+            if payload.get('probability_up') is None or payload.get('model_fallback'):
+                continue
+            probability_up = float(payload.get('probability_up'))
             latest_sentiment = float(payload.get('latest_sentiment_score') or 0.0)
             signal = str(payload.get('signal') or 'HOLD').upper()
             logs.append(
@@ -412,8 +425,8 @@ async def get_forecaster_monitor(user=Depends(get_current_user)):
                     'timestamp': row['updated_at'].timestamp() if row and 'updated_at' in row and row['updated_at'] else None,
                     'asset': str(row['symbol'] or payload.get('symbol') or '-').upper(),
                     'raw_forecast_score': (probability_up * 2.0) - 1.0,
-                    'bull_threshold': 0.2,
-                    'bear_threshold': -0.2,
+                    'bull_threshold': bull_threshold,
+                    'bear_threshold': bear_threshold,
                     'treeshap_log': f"From insights cache: Signal={signal}; ProbUp={probability_up:.4f}; Sentiment={latest_sentiment:.3f}",
                 }
             )
@@ -421,7 +434,7 @@ async def get_forecaster_monitor(user=Depends(get_current_user)):
     return {
         'rows': logs,
         'count': len(logs),
-        'default_thresholds': {'bull': 0.2, 'bear': -0.2},
+        'default_thresholds': {'bull': bull_threshold, 'bear': bear_threshold},
         'execution_summary': {
             'executed': int((execution_summary['executed_count'] if execution_summary else 0) or 0),
             'rejected': int((execution_summary['rejected_count'] if execution_summary else 0) or 0),

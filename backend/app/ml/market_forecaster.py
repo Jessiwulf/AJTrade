@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -210,8 +211,11 @@ class MarketForecaster:
 
         explainer = shap.TreeExplainer(self.model)
 
-        # SHAP API varies by version; support both list and array outputs.
-        shap_values = explainer.shap_values(X)
+        # SHAP API varies by version; support both list and array outputs. The list-output notice
+        # for LightGBM is handled below, so silence it rather than log it on every signal refresh.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="LightGBM binary classifier with TreeExplainer shap values output")
+            shap_values = explainer.shap_values(X)
         expected_value = explainer.expected_value
 
         # For binary classification, prefer class-1 contributions when available.

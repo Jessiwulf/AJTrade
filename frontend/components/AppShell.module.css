@@ -50,7 +50,7 @@
 }
 
 .nav {
-  flex: 1;
+  flex: none;
   margin-top: 0;
   display: grid;
   gap: 4px;
@@ -88,9 +88,20 @@
   flex: none;
 }
 
-/* Nav collapse toggle — sits at the bottom of sidebar */
+/* Nav collapse toggle: directly under the menu, set apart by a divider and spacing so it isn't
+   mistaken for (or mis-clicked instead of) the last menu item. */
+.navToggleRow {
+  display: flex;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--aj-border);
+}
+
+.sidebarCollapsed .navToggleRow {
+  justify-content: center;
+}
+
 .navToggle {
-  margin-top: 12px;
   width: 32px;
   height: 32px;
   flex-shrink: 0;
@@ -332,7 +343,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .navToggle {
+  .navToggleRow {
     display: none;
   }
 }

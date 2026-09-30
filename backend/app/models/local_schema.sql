@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS bot_execution_logs (
   timestamp timestamptz NOT NULL DEFAULT now(),
   asset_symbol text NOT NULL,
   signal_received text NOT NULL,
-  action_taken text NOT NULL CHECK (action_taken IN ('Executed', 'Rejected')),
+  action_taken text NOT NULL CHECK (action_taken IN ('Executed', 'Rejected', 'Pending')),
   execution_price numeric(18,6),
   reject_reason text
 );

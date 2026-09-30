@@ -56,6 +56,17 @@
   padding: 0 8px;
 }
 
+.fxNote {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--aj-text-muted);
+}
+
+.fxNoteWarn {
+  color: #b45309;
+}
+
 .portfolioMetrics {
   display: grid;
   gap: 6px;
@@ -439,6 +450,18 @@
   font-weight: 600;
 }
 
+.tooltipFx {
+  font-size: 11px;
+  color: var(--aj-text-muted);
+}
+
+.chartFxNote {
+  margin: 8px 4px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--aj-text-muted);
+}
+
 .tooltipPrice {
   font-size: 15px;
   font-weight: 800;
@@ -725,6 +748,36 @@
   padding: 10px;
   font-size: 13px;
   line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chatText {
+  white-space: normal;
+  display: grid;
+  gap: 8px;
+}
+
+.chatText p,
+.chatText ul,
+.chatText ol {
+  margin: 0;
+}
+
+.chatText ul,
+.chatText ol {
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.chatText li::marker {
+  color: var(--aj-cta-to);
+}
+
+.chatText strong {
+  color: var(--aj-indigo);
+  font-weight: 700;
 }
 
 .chatAi {

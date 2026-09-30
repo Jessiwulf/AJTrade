@@ -1,0 +1,692 @@
+/* Landing hero: layered 3D stage of AI Insights cards (tilts with the pointer, cycles through assets). */
+
+.wrap {
+  --hs-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+  display: grid;
+  gap: 40px;
+  animation: stageIn 0.9s var(--hs-ease) 0.3s both;
+}
+
+@keyframes stageIn {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes fillIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes grow {
+  from {
+    width: 0;
+  }
+  to {
+    width: var(--w);
+  }
+}
+
+@keyframes swapIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.buy { color: var(--aj-positive); }
+.sell { color: var(--aj-negative); }
+.hold { color: var(--aj-text-muted); }
+
+.swap {
+  animation: swapIn 0.5s var(--hs-ease) both;
+}
+
+/* Stage */
+.stage {
+  position: relative;
+  height: 470px;
+  perspective: 1400px;
+  perspective-origin: 50% 40%;
+}
+
+.inner {
+  --rx: 4deg;
+  --ry: -8deg;
+  --gx: 50%;
+  --gy: 30%;
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(var(--rx)) rotateY(var(--ry));
+}
+
+.floor {
+  position: absolute;
+  inset: 10% 4% 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 60% 40%, var(--aj-accent-soft), transparent 62%),
+    radial-gradient(circle at 30% 70%, rgba(30, 58, 138, 0.12), transparent 60%);
+  filter: blur(24px);
+  transform: translateZ(-80px);
+}
+
+.layer {
+  position: absolute;
+  transform-style: preserve-3d;
+  transform: translateZ(var(--z, 0px));
+  transition: transform 0.45s var(--hs-ease);
+}
+
+.layer:hover {
+  transform: translateZ(calc(var(--z, 0px) + 36px));
+  z-index: 5;
+}
+
+/* Widths in % so the signal and drivers cards never overlap, whatever the column width. */
+.layerPrice {
+  --z: 0px;
+  top: 22px;
+  left: 0;
+  width: 60%;
+}
+
+.layerDrivers {
+  --z: 45px;
+  top: 250px;
+  left: 0;
+  width: 53%;
+}
+
+.layerNews {
+  --z: 70px;
+  top: 0;
+  right: 0;
+  width: 45%;
+}
+
+.layerSignal {
+  --z: 120px;
+  top: 142px;
+  right: 0;
+  width: 45%;
+}
+
+.layerPlan {
+  --z: 90px;
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
+.card {
+  position: relative;
+  overflow: hidden;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-bg);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.06);
+  transition: box-shadow 0.45s var(--hs-ease);
+}
+
+.layer:hover .card {
+  box-shadow: 0 30px 60px rgba(15, 23, 42, 0.18), 0 4px 10px rgba(15, 23, 42, 0.08);
+}
+
+/* Each layer bobs on its own rhythm (skipped with reduced motion). */
+.layer > .card:not(.swap) {
+  animation: bob var(--bob, 7s) ease-in-out infinite;
+}
+
+.layerPrice { --bob: 8s; }
+.layerDrivers { --bob: 9s; }
+.layerSignal { --bob: 6.5s; }
+.layerPlan { --bob: 8.5s; }
+
+.label {
+  margin: 0 0 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aj-text-muted);
+}
+
+/* Price */
+.priceHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.priceHead strong {
+  font-size: 17px;
+  font-weight: 950;
+  color: var(--aj-indigo);
+}
+
+.chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-border);
+  font-size: 11px;
+}
+
+.chipUp {
+  color: var(--aj-positive);
+  background: color-mix(in srgb, var(--aj-positive) 8%, var(--aj-bg));
+}
+
+.chipDown {
+  color: var(--aj-negative);
+  background: color-mix(in srgb, var(--aj-negative) 8%, var(--aj-bg));
+}
+
+.sparkPlot {
+  position: relative;
+  height: 84px;
+  cursor: crosshair;
+}
+
+.sparkSvg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.lineUp,
+.lineDown {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  animation: draw 1.1s var(--hs-ease) both;
+}
+
+.lineUp { stroke: var(--aj-positive); }
+.lineDown { stroke: var(--aj-negative); }
+
+.areaUp,
+.areaDown {
+  animation: fillIn 0.9s ease 0.3s both;
+}
+
+.areaUp { fill: color-mix(in srgb, var(--aj-positive) 12%, transparent); }
+.areaDown { fill: color-mix(in srgb, var(--aj-negative) 12%, transparent); }
+
+.cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--aj-border-strong);
+  pointer-events: none;
+}
+
+.dot {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: var(--aj-indigo);
+  box-shadow: 0 0 0 2px var(--aj-bg);
+  pointer-events: none;
+}
+
+.tip {
+  position: absolute;
+  top: 0;
+  transform: translateX(8px);
+  padding: 3px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-bg);
+  font-size: 11px;
+  color: var(--aj-text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tip strong {
+  color: var(--aj-text);
+}
+
+.tipFlip {
+  transform: translateX(calc(-100% - 8px));
+}
+
+/* Drivers */
+.drivers {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 7px;
+}
+
+.drivers li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(50px, 1fr) 56px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.driverLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--aj-surface);
+  border: 1px solid var(--aj-border-soft);
+}
+
+.mid {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 50%;
+  width: 1px;
+  background: var(--aj-border-strong);
+}
+
+.barUp,
+.barDown {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: var(--w);
+  animation: grow 0.8s var(--hs-ease) var(--d, 0s) both;
+}
+
+.barUp {
+  background: var(--aj-positive);
+  border-radius: 0 999px 999px 0;
+}
+
+.barDown {
+  background: var(--aj-negative);
+  border-radius: 999px 0 0 999px;
+}
+
+.driverValue {
+  text-align: right;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+/* News */
+.headline {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--aj-text);
+}
+
+.newsChip {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-surface);
+  font-size: 11.5px;
+  color: var(--aj-text-muted);
+}
+
+.newsChip strong {
+  color: var(--aj-text);
+}
+
+/* Signal */
+.signalCard {
+  transition: background 0.6s ease, border-color 0.6s ease, box-shadow 0.45s var(--hs-ease);
+}
+
+.signalBuy {
+  border-color: color-mix(in srgb, var(--aj-positive) 32%, var(--aj-border));
+  background: color-mix(in srgb, var(--aj-positive) 5%, var(--aj-bg));
+}
+
+.signalSell {
+  border-color: color-mix(in srgb, var(--aj-negative) 32%, var(--aj-border));
+  background: color-mix(in srgb, var(--aj-negative) 5%, var(--aj-bg));
+}
+
+.glare {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at var(--gx) var(--gy), rgba(255, 255, 255, 0.6), transparent 55%);
+  mix-blend-mode: soft-light;
+  pointer-events: none;
+}
+
+.score {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 6px;
+  line-height: 1;
+}
+
+.scoreValue {
+  font-size: 36px;
+  font-weight: 950;
+  letter-spacing: -0.03em;
+  color: var(--aj-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.scoreSignal {
+  display: inline-block;
+  font-size: 30px;
+  font-weight: 950;
+  letter-spacing: -0.02em;
+}
+
+.scoreText {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--aj-text-muted);
+}
+
+.scoreText strong {
+  color: var(--aj-text);
+}
+
+.gauge {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-bg);
+}
+
+.gaugeSell,
+.gaugeBuy {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.gaugeSell {
+  left: 0;
+  width: 45%;
+  border-radius: 999px 0 0 999px;
+  background: color-mix(in srgb, var(--aj-negative) 22%, transparent);
+}
+
+.gaugeBuy {
+  left: 55%;
+  right: 0;
+  border-radius: 0 999px 999px 0;
+  background: color-mix(in srgb, var(--aj-positive) 22%, transparent);
+}
+
+.gaugeMarker {
+  position: absolute;
+  top: -4px;
+  width: 4px;
+  height: 16px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--aj-indigo);
+  box-shadow: 0 0 0 2px var(--aj-bg);
+  transition: left 0.9s var(--hs-ease);
+}
+
+.gaugeScale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--aj-text-muted);
+}
+
+/* Automate plan */
+.planCard {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.planCard .label {
+  margin-bottom: 2px;
+}
+
+.planStrategy {
+  display: block;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.tiles {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tiles span {
+  flex: 1;
+  display: grid;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-surface);
+  font-size: 13px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.tiles small {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--aj-text-muted);
+}
+
+.planButton {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--aj-cta-gradient);
+  color: var(--aj-ink);
+  font-size: 12.5px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+/* Asset switcher (below the stage) */
+.switcher {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.switch {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-bg);
+  color: var(--aj-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s var(--hs-ease);
+}
+
+.switch:hover {
+  transform: translateY(-1px);
+  border-color: var(--aj-border-strong);
+}
+
+.switchOn {
+  border-color: var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+  box-shadow: var(--aj-shadow-sm);
+}
+
+.switchSignal {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.switchProgress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--aj-cta-to);
+  transform-origin: left;
+  animation: progress 5.2s linear forwards;
+}
+
+/* Narrow screens: flat, stacked cards (no 3D). */
+@media (max-width: 980px) {
+  .stage {
+    height: auto;
+    perspective: none;
+  }
+
+  .inner {
+    position: static;
+    transform: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .floor {
+    display: none;
+  }
+
+  .layer,
+  .layer:hover {
+    position: static;
+    width: auto;
+    transform: none;
+  }
+
+  .layerSignal {
+    order: -1;
+  }
+
+  .layerPlan {
+    grid-column: 1 / -1;
+  }
+
+  .layer > .card:not(.swap) {
+    animation: none;
+  }
+
+  .card {
+    height: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .inner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .planCard {
+    flex-wrap: wrap;
+  }
+
+  .tiles {
+    flex-basis: 100%;
+    order: 2;
+  }
+}
+
+/* Reduced motion: no floating or drawing; content still swaps (with a plain fade) and the stage still
+   tilts when the visitor moves the pointer over it. */
+@media (prefers-reduced-motion: reduce) {
+  .wrap,
+  .layer > .card:not(.swap),
+  .lineUp,
+  .lineDown,
+  .areaUp,
+  .areaDown,
+  .barUp,
+  .barDown,
+  .switchProgress {
+    animation: none;
+  }
+
+  .swap {
+    animation: fillIn 0.3s ease both;
+  }
+
+  .gaugeMarker {
+    transition-duration: 0.3s;
+  }
+}

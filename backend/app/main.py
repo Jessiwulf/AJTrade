@@ -54,23 +54,37 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AJTrade API", lifespan=lifespan)
 
-# CORS: default to allowing localhost on any port for development.
-# Override via:
+# CORS: always allow localhost (any port), the production Vercel domain, and
+# every Vercel preview/branch deployment of this project, e.g.
+#   https://ajtrade.vercel.app
+#   https://aj-trade-6ottsn07y-jirapats-projects-2f14beb6.vercel.app
+#   https://aj-trade-git-<branch>-jirapats-projects-2f14beb6.vercel.app
+# Extend via:
 # - AJTRADE_CORS_ALLOW_ALL=1 (reflect origin)
-# - AJTRADE_CORS_ORIGINS="https://yourapp.vercel.app,http://localhost:3000"
-# - AJTRADE_CORS_ORIGIN_REGEX="^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$"
+# - AJTRADE_CORS_ORIGINS="https://custom-domain.com,https://other.app" (added to the list)
+# - AJTRADE_CORS_ORIGIN_REGEX="^https://.*\.example\.com$" (OR-ed with the defaults)
+DEFAULT_CORS_ORIGINS = [
+    "https://ajtrade.vercel.app",
+]
+DEFAULT_CORS_ORIGIN_REGEX = (
+    r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$"
+    r"|^https://aj-trade-[a-z0-9-]+-jirapats-projects-2f14beb6\.vercel\.app$"
+)
+
 cors_allow_all = os.environ.get('AJTRADE_CORS_ALLOW_ALL', '').lower() in ('1', 'true', 'yes')
 cors_origins_env = os.environ.get('AJTRADE_CORS_ORIGINS', '')
-cors_origins = [o.strip() for o in cors_origins_env.split(',') if o.strip()]
-cors_origin_regex = os.environ.get('AJTRADE_CORS_ORIGIN_REGEX')
-
-if cors_origin_regex is None and not cors_allow_all and not cors_origins:
-    cors_origin_regex = r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$"
+cors_origins = DEFAULT_CORS_ORIGINS + [
+    o.strip().rstrip('/') for o in cors_origins_env.split(',') if o.strip()
+]
+cors_origin_regex = DEFAULT_CORS_ORIGIN_REGEX
+extra_regex = os.environ.get('AJTRADE_CORS_ORIGIN_REGEX')
+if extra_regex:
+    cors_origin_regex = f"(?:{cors_origin_regex})|(?:{extra_regex})"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'] if cors_allow_all else cors_origins,
-    allow_origin_regex=None if (cors_allow_all or cors_origins) else cors_origin_regex,
+    allow_origin_regex=None if cors_allow_all else cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -164,13 +178,5 @@ try:
     app.include_router(trading_bot_router.router, prefix='/api/bot')
 except Exception as e:
     logger.warning("Trading bot router not loaded: %s", e)
-
-
-try:
-    from app.api import analytics_seeder as seeder_router
-
-    app.include_router(seeder_router.router, prefix='/api/analytics')
-except Exception as e:
-    logger.warning("Analytics seeder not loaded: %s", e)
 
 

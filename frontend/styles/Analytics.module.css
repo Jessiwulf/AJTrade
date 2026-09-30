@@ -55,19 +55,19 @@
   gap: 4px;
 }
 
-.metricCard p {
+.metricCard > p {
   margin: 0;
   color: var(--panel-muted);
   font-size: 12px;
 }
 
-.metricCard strong {
+.metricCard > strong {
   color: var(--panel-text);
   font-size: 18px;
   letter-spacing: -0.02em;
 }
 
-.metricCard span {
+.metricCard > span {
   color: var(--panel-muted);
   font-size: 11px;
 }
@@ -187,6 +187,253 @@
 
 .sentimentNeutral {
   border-color: var(--panel-border);
+}
+
+.titleRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Daily sentiment heatmap */
+.heatDetails {
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: var(--aj-bg);
+}
+
+.heatSummary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--panel-text);
+  cursor: pointer;
+  list-style: none;
+  border-radius: 12px;
+}
+
+.heatSummary::-webkit-details-marker {
+  display: none;
+}
+
+.heatSummary:hover {
+  background: var(--aj-surface);
+}
+
+.heatSummaryHint {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--panel-muted);
+}
+
+.heatChevron {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--panel-muted);
+  border-bottom: 2px solid var(--panel-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.18s ease;
+}
+
+.heatDetails[open] .heatChevron {
+  transform: rotate(45deg);
+}
+
+.heatBody {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.heatToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.heatLegend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--panel-muted);
+}
+
+.heatLegendBar {
+  width: 120px;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(185, 28, 28), rgb(236, 239, 243), rgb(21, 128, 61));
+}
+
+.heatSwatch {
+  width: 14px;
+  height: 14px;
+  margin-left: 8px;
+  border-radius: 4px;
+}
+
+.heatRange {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--aj-surface);
+}
+
+.heatRange button {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--panel-muted);
+  cursor: pointer;
+}
+
+.heatRange .heatRangeOn {
+  background: var(--aj-bg);
+  color: var(--panel-text);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.heatScroll {
+  overflow-x: auto;
+}
+
+.heatTable {
+  display: grid;
+  gap: 3px;
+  min-width: max-content;
+}
+
+.heatRow {
+  display: contents;
+}
+
+.heatCorner {
+  display: block;
+}
+
+.heatDayLabel {
+  font-size: 10.5px;
+  color: var(--panel-muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.heatSymbol {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--panel-text);
+}
+
+.heatCell {
+  height: 30px;
+  border: 0;
+  border-radius: 5px;
+  padding: 0;
+  font-size: 10.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+button.heatCell:hover {
+  outline: 2px solid var(--aj-indigo);
+  outline-offset: -1px;
+}
+
+.heatCellSelected {
+  outline: 2px solid var(--aj-cta-to) !important;
+  outline-offset: 1px;
+}
+
+.heatEmpty {
+  cursor: default;
+  background: repeating-linear-gradient(135deg, var(--aj-surface) 0 3px, var(--aj-bg) 3px 6px);
+  border: 1px solid var(--panel-border);
+}
+
+.heatDetail {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--aj-surface);
+}
+
+.heatDetailHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--panel-text);
+}
+
+.heatClose {
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--panel-muted);
+  cursor: pointer;
+}
+
+.heatStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12.5px;
+  color: var(--panel-text);
+}
+
+.heatHeadlines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.heatHeadlines li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.heatHeadlines a {
+  color: var(--aj-indigo);
+}
+
+.heatHeadlines em {
+  flex: none;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--panel-muted);
+}
+
+.heatScoreChip {
+  flex: none;
+  min-width: 46px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--aj-bg);
+  border: 1px solid var(--panel-border);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 1280px) {

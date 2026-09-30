@@ -74,3 +74,6 @@ dist/
 *.p12
 *.pfx
 *.jks
+
+# --- Source media (large originals; the site uses the compressed copies in frontend/public/) ---
+frontend/media/

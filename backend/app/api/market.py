@@ -5,9 +5,13 @@ from fastapi import APIRouter, HTTPException, Query, status
 from starlette.concurrency import run_in_threadpool
 
 import httpx
+import logging
 import os
+import threading
+import time
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _RANGE_MAP = {
     'day': ('1d', '5m'),
@@ -48,56 +52,141 @@ def _epoch_to_iso(ts: int) -> str:
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
 
 
-def _fetch_yahoo_fundamentals(symbol: str) -> dict:
-    url = f'https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}'
-    params = {
-        'modules': 'price,summaryDetail,defaultKeyStatistics,financialData',
-    }
-    headers = {
-        'accept': 'application/json,text/plain,*/*',
-        'accept-language': 'en-US,en;q=0.9',
-        'user-agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/126.0.0.0 Safari/537.36'
-        ),
-    }
+_YAHOO_HEADERS = {
+    'accept': 'application/json,text/plain,*/*',
+    'accept-language': 'en-US,en;q=0.9',
+    'user-agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/126.0.0.0 Safari/537.36'
+    ),
+}
+_YAHOO_SESSION_TTL_S = 30 * 60
+_FUNDAMENTALS_TTL_S = 5 * 60
+_FUNDAMENTALS_FAILURE_TTL_S = 60
 
-    def _raw_or_none(node):
-        if isinstance(node, dict):
-            raw = node.get('raw')
-            return raw if raw is not None else node.get('fmt')
-        return node
+# Yahoo's quoteSummary endpoint requires a consent cookie plus a matching "crumb" token.
+# Both are cached process-wide and refreshed on expiry or when Yahoo rejects them.
+_yahoo_lock = threading.Lock()
+_yahoo_client: Optional[httpx.Client] = None
+_yahoo_crumb: Optional[str] = None
+_yahoo_crumb_expires = 0.0
+_fundamentals_cache: dict = {}
 
-    with httpx.Client(timeout=15.0, headers=headers, follow_redirects=True) as client:
-        response = client.get(url, params=params)
+
+def _yahoo_session(force_refresh: bool = False):
+    global _yahoo_client, _yahoo_crumb, _yahoo_crumb_expires
+    with _yahoo_lock:
+        now = time.monotonic()
+        if _yahoo_client is None:
+            _yahoo_client = httpx.Client(timeout=15.0, headers=_YAHOO_HEADERS, follow_redirects=True)
+        if not force_refresh and _yahoo_crumb and now < _yahoo_crumb_expires:
+            return _yahoo_client, _yahoo_crumb
+
+        _yahoo_client.cookies.clear()
+        try:
+            # Sets the A3 cookie; this host answers 404, which is expected.
+            _yahoo_client.get('https://fc.yahoo.com')
+        except httpx.HTTPError:
+            pass
+        response = _yahoo_client.get('https://query2.finance.yahoo.com/v1/test/getcrumb')
+        crumb = response.text.strip()
+        if response.status_code != 200 or not crumb or '<' in crumb or ' ' in crumb:
+            _yahoo_crumb = None
+            raise RuntimeError(f'yahoo_crumb_unavailable: HTTP {response.status_code}')
+        _yahoo_crumb = crumb
+        _yahoo_crumb_expires = now + _YAHOO_SESSION_TTL_S
+        return _yahoo_client, _yahoo_crumb
+
+
+def _raw_or_none(node):
+    if isinstance(node, dict):
+        raw = node.get('raw')
+        return raw if raw is not None else node.get('fmt')
+    return node
+
+
+def _request_quote_summary(symbol: str) -> Optional[dict]:
+    """Return the quoteSummary result for symbol, or None when Yahoo has no such symbol."""
+    params = {'modules': 'price,summaryDetail,defaultKeyStatistics,financialData'}
+    for attempt in range(2):
+        client, crumb = _yahoo_session(force_refresh=attempt > 0)
+        response = client.get(
+            f'https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}',
+            params={**params, 'crumb': crumb},
+        )
+        if response.status_code in (401, 403) and attempt == 0:
+            continue  # stale cookie/crumb: refresh once and retry
+        if response.status_code == 404:
+            return None
         response.raise_for_status()
         payload = response.json() or {}
+        return (((payload.get('quoteSummary') or {}).get('result') or [None])[0]) or None
+    return None
 
-    result = (((payload.get('quoteSummary') or {}).get('result') or [None])[0]) or {}
-    price = result.get('price') or {}
-    summary = result.get('summaryDetail') or {}
-    stats = result.get('defaultKeyStatistics') or {}
-    financial = result.get('financialData') or {}
 
-    return {
-        'market_cap': _raw_or_none(price.get('marketCap')),
-        'latest_price': _raw_or_none(price.get('regularMarketPrice')),
-        'previous_close': _raw_or_none(price.get('regularMarketPreviousClose')),
-        'open': _raw_or_none(price.get('regularMarketOpen')),
-        'day_low': _raw_or_none(price.get('regularMarketDayLow')),
-        'day_high': _raw_or_none(price.get('regularMarketDayHigh')),
-        'volume': _raw_or_none(summary.get('volume')),
-        'avg_volume': _raw_or_none(summary.get('averageVolume')),
-        'pe_ratio': _raw_or_none(summary.get('trailingPE')) or _raw_or_none(stats.get('trailingPE')),
-        'dividend_yield': _raw_or_none(summary.get('dividendYield')),
-        'week_52_high': _raw_or_none(summary.get('fiftyTwoWeekHigh')),
-        'week_52_low': _raw_or_none(summary.get('fiftyTwoWeekLow')),
-        'revenue': _raw_or_none(financial.get('totalRevenue')),
-        'net_income': _raw_or_none(financial.get('netIncomeToCommon')),
-        'eps': _raw_or_none(stats.get('trailingEps')) or _raw_or_none(financial.get('trailingEps')),
-        'beta': _raw_or_none(stats.get('beta')),
-    }
+def _fetch_yahoo_fundamentals(symbol: str) -> dict:
+    now = time.monotonic()
+    cached = _fundamentals_cache.get(symbol)
+    if cached and now < cached[0]:
+        if isinstance(cached[1], Exception):
+            raise cached[1]
+        return cached[1]
+
+    try:
+        result = _request_quote_summary(symbol)
+    except Exception as exc:
+        # Remember failures briefly so polling clients don't hammer a rate-limited upstream.
+        _fundamentals_cache[symbol] = (now + _FUNDAMENTALS_FAILURE_TTL_S, exc)
+        raise
+
+    data = {}
+    if result:
+        price = result.get('price') or {}
+        summary = result.get('summaryDetail') or {}
+        stats = result.get('defaultKeyStatistics') or {}
+        financial = result.get('financialData') or {}
+        data = {
+            'currency': price.get('currency') or summary.get('currency'),
+            'market_cap': _raw_or_none(price.get('marketCap')) or _raw_or_none(summary.get('marketCap')),
+            'latest_price': _raw_or_none(price.get('regularMarketPrice')) or _raw_or_none(financial.get('currentPrice')),
+            'previous_close': _raw_or_none(price.get('regularMarketPreviousClose')) or _raw_or_none(summary.get('previousClose')),
+            'open': _raw_or_none(price.get('regularMarketOpen')) or _raw_or_none(summary.get('open')),
+            'day_low': _raw_or_none(price.get('regularMarketDayLow')) or _raw_or_none(summary.get('dayLow')),
+            'day_high': _raw_or_none(price.get('regularMarketDayHigh')) or _raw_or_none(summary.get('dayHigh')),
+            'volume': _raw_or_none(price.get('regularMarketVolume')) or _raw_or_none(summary.get('volume')),
+            'avg_volume': _raw_or_none(summary.get('averageVolume')),
+            'pe_ratio': _raw_or_none(summary.get('trailingPE')) or _raw_or_none(stats.get('trailingPE')),
+            'dividend_yield': _raw_or_none(summary.get('dividendYield')),
+            'week_52_high': _raw_or_none(summary.get('fiftyTwoWeekHigh')),
+            'week_52_low': _raw_or_none(summary.get('fiftyTwoWeekLow')),
+            'revenue': _raw_or_none(financial.get('totalRevenue')),
+            'net_income': _raw_or_none(stats.get('netIncomeToCommon')) or _raw_or_none(financial.get('netIncomeToCommon')),
+            'eps': _raw_or_none(stats.get('trailingEps')) or _raw_or_none(financial.get('trailingEps')),
+            'beta': _raw_or_none(summary.get('beta')) or _raw_or_none(stats.get('beta')),
+        }
+
+    _fundamentals_cache[symbol] = (now + _FUNDAMENTALS_TTL_S, data)
+    return data
+
+
+def _fetch_fundamentals_with_variants(symbol: str) -> dict:
+    # Mirror the chart lookup: raw symbol first, then the Thai (.BK) listing.
+    variants = [symbol]
+    if symbol and symbol.isalpha() and len(symbol) <= 6:
+        variants.append(f'{symbol}.BK')
+    last_exc = None
+    for variant in variants:
+        try:
+            data = _fetch_yahoo_fundamentals(variant)
+        except Exception as exc:
+            last_exc = exc
+            continue
+        if data:
+            return data
+    if last_exc:
+        raise last_exc
+    return {}
 
 
 def _fetch_yahoo_chart(symbol: str, range_name: str) -> dict:
@@ -209,6 +298,12 @@ def _fetch_yahoo_chart_with_variants(symbol: str, range_name: str) -> dict:
             last_exc = e
             # try next variant
             continue
+        except httpx.HTTPStatusError as e:
+            # Yahoo answers an unknown symbol (e.g. "PTT" instead of "PTT.BK") with a raw 404.
+            if e.response.status_code != 404:
+                raise
+            last_exc = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'No price data found for {s}')
+            continue
     # re-raise the last HTTP exception if all variants failed
     if last_exc:
         raise last_exc
@@ -270,7 +365,8 @@ def _try_alpaca_quote(symbol: str) -> Optional[dict]:
     key = os.environ.get('ALPACA_KEY_ID')
     secret = os.environ.get('ALPACA_SECRET_KEY')
     base = (os.environ.get('ALPACA_BASE_URL') or 'https://data.alpaca.markets').rstrip('/')
-    if not key or not secret:
+    # Stock bars only; crypto pairs ("BTC-USD") are quoted from Yahoo.
+    if not key or not secret or symbol.endswith('-USD'):
         return None
     # try Bars endpoint
     try:
@@ -449,79 +545,66 @@ def _none_if_nan(value):
 
 
 def _fetch_asset_statistics(symbol: str) -> dict:
-    import yfinance as yf
-
     normalized = _normalize_symbol(symbol)
     if not normalized:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid symbol')
 
-    ticker = yf.Ticker(normalized)
-    info = ticker.info or {}
     fundamentals = {}
     try:
-        fundamentals = _fetch_yahoo_fundamentals(normalized)
-    except Exception:
-        fundamentals = {}
+        fundamentals = _fetch_fundamentals_with_variants(normalized)
+    except Exception as exc:
+        logger.warning('yahoo_fundamentals_failed symbol=%s error=%s', normalized, exc)
 
-    previous_close = _none_if_nan(info.get('previousClose')) or _none_if_nan(fundamentals.get('previous_close'))
-    open_price = _none_if_nan(info.get('open')) or _none_if_nan(fundamentals.get('open'))
-    day_low = _none_if_nan(info.get('dayLow')) or _none_if_nan(fundamentals.get('day_low'))
-    day_high = _none_if_nan(info.get('dayHigh')) or _none_if_nan(fundamentals.get('day_high'))
-    week_low = _none_if_nan(info.get('fiftyTwoWeekLow')) or _none_if_nan(fundamentals.get('week_52_low'))
-    week_high = _none_if_nan(info.get('fiftyTwoWeekHigh')) or _none_if_nan(fundamentals.get('week_52_high'))
+    def pick(key):
+        return _none_if_nan(fundamentals.get(key))
 
-    revenue = _none_if_nan(info.get('totalRevenue')) or _none_if_nan(fundamentals.get('revenue'))
-    net_income = _none_if_nan(info.get('netIncomeToCommon')) or _none_if_nan(fundamentals.get('net_income'))
-    eps = _none_if_nan(info.get('trailingEps')) or _none_if_nan(fundamentals.get('eps'))
-    pe_ratio = _none_if_nan(info.get('trailingPE')) or _none_if_nan(fundamentals.get('pe_ratio'))
-    beta = _none_if_nan(info.get('beta')) or _none_if_nan(fundamentals.get('beta'))
+    latest_price = pick('latest_price')
+    previous_close = pick('previous_close')
+    open_price = pick('open')
+    day_low = pick('day_low')
+    day_high = pick('day_high')
+    week_low = pick('week_52_low')
+    week_high = pick('week_52_high')
+    volume = pick('volume')
+    currency = fundamentals.get('currency')
 
-    latest_price = _none_if_nan(info.get('currentPrice')) or _none_if_nan(fundamentals.get('latest_price'))
-    if latest_price is None:
-        chart = _fetch_yahoo_chart_with_variants(normalized, 'day')
-        quote = chart.get('quote') or {}
-        latest_price = _none_if_nan(quote.get('price'))
-        previous_close = previous_close if previous_close is not None else _none_if_nan(quote.get('previous_close'))
-
-        if day_low is None or day_high is None:
-            points = chart.get('points') or []
-            lows = [p.get('low') for p in points if p.get('low') is not None]
-            highs = [p.get('high') for p in points if p.get('high') is not None]
-            if day_low is None and lows:
-                day_low = float(min(lows))
-            if day_high is None and highs:
-                day_high = float(max(highs))
-
-        if week_low is None or week_high is None:
-            quote = chart.get('quote') or {}
-            week_low = week_low if week_low is not None else _none_if_nan(quote.get('week_52_low'))
-            week_high = week_high if week_high is not None else _none_if_nan(quote.get('week_52_high'))
-
-    if open_price is None or day_low is None or day_high is None or week_low is None or week_high is None:
-        chart = _fetch_yahoo_chart_with_variants(normalized, 'day')
+    # Price fields can always be recovered from the chart endpoint, which needs no crumb.
+    if None in (latest_price, previous_close, open_price, day_low, day_high, week_low, week_high, volume):
+        try:
+            chart = _fetch_yahoo_chart_with_variants(normalized, 'day')
+        except Exception as exc:
+            if not fundamentals:
+                not_found = (
+                    (isinstance(exc, HTTPException) and exc.status_code == status.HTTP_404_NOT_FOUND)
+                    or (isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404)
+                )
+                if not_found:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'No market data found for {normalized}')
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f'market_data_unavailable: {exc}')
+            chart = {}
         quote = chart.get('quote') or {}
         points = chart.get('points') or []
-        if open_price is None:
-            open_price = _none_if_nan(quote.get('open'))
-            if open_price is None:
-                first_open = next((_none_if_nan(point.get('open')) for point in points if _none_if_nan(point.get('open')) is not None), None)
-                if first_open is None:
-                    first_open = next((_none_if_nan(point.get('close')) for point in points if _none_if_nan(point.get('close')) is not None), None)
-                open_price = first_open
-        if day_low is None or day_high is None:
-            lows = [p.get('low') for p in points if p.get('low') is not None]
-            highs = [p.get('high') for p in points if p.get('high') is not None]
-            if day_low is None and lows:
-                day_low = float(min(lows))
-            if day_high is None and highs:
-                day_high = float(max(highs))
-        if week_low is None or week_high is None:
-            week_low = week_low if week_low is not None else _none_if_nan(quote.get('week_52_low'))
-            week_high = week_high if week_high is not None else _none_if_nan(quote.get('week_52_high'))
+        lows = [p['low'] for p in points if p.get('low') is not None]
+        highs = [p['high'] for p in points if p.get('high') is not None]
+        first_open = next(
+            (p.get('open') if p.get('open') is not None else p.get('close') for p in points
+             if p.get('open') is not None or p.get('close') is not None),
+            None,
+        )
+
+        latest_price = latest_price if latest_price is not None else _none_if_nan(quote.get('price'))
+        previous_close = previous_close if previous_close is not None else _none_if_nan(quote.get('previous_close'))
+        open_price = open_price if open_price is not None else _none_if_nan(first_open)
+        day_low = day_low if day_low is not None else (float(min(lows)) if lows else None)
+        day_high = day_high if day_high is not None else (float(max(highs)) if highs else None)
+        week_low = week_low if week_low is not None else _none_if_nan(quote.get('week_52_low'))
+        week_high = week_high if week_high is not None else _none_if_nan(quote.get('week_52_high'))
+        volume = volume if volume is not None else _none_if_nan(quote.get('volume'))
+        currency = currency or quote.get('currency')
 
     return {
         'symbol': normalized,
-        'currency': info.get('currency'),
+        'currency': currency,
         'latest_price': latest_price,
         'previous_close': previous_close,
         'open': open_price,
@@ -529,14 +612,213 @@ def _fetch_asset_statistics(symbol: str) -> dict:
         'day_high': day_high,
         'week_52_low': week_low,
         'week_52_high': week_high,
-        'volume': _none_if_nan(info.get('volume')) or _none_if_nan(fundamentals.get('volume')),
-        'market_cap': _none_if_nan(info.get('marketCap')) or _none_if_nan(fundamentals.get('market_cap')),
-        'revenue': revenue,
-        'net_income': net_income,
-        'eps': eps,
-        'pe_ratio': pe_ratio,
-        'beta': beta,
+        'volume': volume,
+        'market_cap': pick('market_cap'),
+        'revenue': pick('revenue'),
+        'net_income': pick('net_income'),
+        'eps': pick('eps'),
+        'pe_ratio': pick('pe_ratio'),
+        'beta': pick('beta'),
     }
+
+
+_FX_LIVE_TTL_S = 60
+_FX_FALLBACK_TTL_S = 60 * 60
+# FX trades 24/5, so the last tick can legitimately be from Friday; allow for weekends and holidays.
+_FX_STALE_AFTER_S = 4 * 24 * 60 * 60
+_fx_lock = threading.Lock()
+_fx_cache: dict = {}
+_fx_last_good: dict = {}
+_fx_fallback_table: dict = {'expires': 0.0, 'rates': {}, 'as_of': None}
+
+
+def _fetch_fx_yahoo(currency: str) -> dict:
+    """Live USD->currency rate from Yahoo's `{CUR}=X` pair (units of currency per 1 USD)."""
+    with httpx.Client(timeout=10.0, headers=_YAHOO_HEADERS, follow_redirects=True) as client:
+        response = client.get(
+            f'https://query1.finance.yahoo.com/v8/finance/chart/{currency}=X',
+            params={'range': '1d', 'interval': '1m'},
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    results = (payload.get('chart') or {}).get('result') or []
+    meta = (results[0] or {}).get('meta') or {} if results else {}
+    rate = _none_if_nan(meta.get('regularMarketPrice'))
+    if rate is None or rate <= 0 or str(meta.get('currency') or '').upper() != currency:
+        raise ValueError(f'yahoo_fx_invalid_quote for {currency}')
+    market_time = meta.get('regularMarketTime')
+    return {
+        'rate': float(rate),
+        'source': 'Yahoo Finance',
+        'as_of': _epoch_to_iso(market_time) if market_time else datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _fetch_fx_fallback(currency: str) -> dict:
+    """Daily reference rates (open.er-api.com, no key) used only when the live feed fails."""
+    now = time.monotonic()
+    if now >= _fx_fallback_table['expires']:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get('https://open.er-api.com/v6/latest/USD')
+            response.raise_for_status()
+            payload = response.json() or {}
+        if payload.get('result') != 'success':
+            raise ValueError('fx_fallback_unavailable')
+        updated = payload.get('time_last_update_unix')
+        _fx_fallback_table.update(
+            expires=now + _FX_FALLBACK_TTL_S,
+            rates=payload.get('rates') or {},
+            as_of=_epoch_to_iso(updated) if updated else None,
+        )
+    rate = _none_if_nan(_fx_fallback_table['rates'].get(currency))
+    if rate is None or rate <= 0:
+        raise ValueError(f'fx_fallback_missing {currency}')
+    return {'rate': float(rate), 'source': 'ExchangeRate-API (daily)', 'as_of': _fx_fallback_table['as_of']}
+
+
+def _is_stale(as_of: Optional[str]) -> bool:
+    if not as_of:
+        return True
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(as_of)
+    except ValueError:
+        return True
+    return age.total_seconds() > _FX_STALE_AFTER_S
+
+
+def _get_fx_rate(currency: str) -> Optional[dict]:
+    if currency == 'USD':
+        return {'rate': 1.0, 'source': 'identity', 'as_of': datetime.now(timezone.utc).isoformat(), 'stale': False}
+
+    now = time.monotonic()
+    with _fx_lock:
+        cached = _fx_cache.get(currency)
+        if cached and now < cached[0]:
+            return cached[1]
+
+    entry = None
+    for fetcher in (_fetch_fx_yahoo, _fetch_fx_fallback):
+        try:
+            entry = fetcher(currency)
+            break
+        except Exception as exc:
+            logger.warning('fx_source_failed source=%s currency=%s error=%s', fetcher.__name__, currency, exc)
+
+    with _fx_lock:
+        if entry is not None:
+            entry['stale'] = _is_stale(entry['as_of'])
+            _fx_last_good[currency] = entry
+        else:
+            # Both sources down: serve the last good rate, clearly flagged, rather than inventing one.
+            last = _fx_last_good.get(currency)
+            entry = {**last, 'stale': True} if last else None
+        if entry is not None:
+            _fx_cache[currency] = (now + _FX_LIVE_TTL_S, entry)
+    return entry
+
+
+def _fetch_fx_rates(currencies: List[str]) -> dict:
+    rates = {'USD': 1.0}
+    details = {}
+    unavailable = []
+    for currency in currencies:
+        entry = _get_fx_rate(currency)
+        if entry is None:
+            unavailable.append(currency)
+            continue
+        rates[currency] = entry['rate']
+        details[currency] = entry
+    return {
+        'base': 'USD',
+        'rates': rates,
+        'details': details,
+        'unavailable': unavailable,
+        'fetched_at': datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get('/fx')
+async def get_fx_rates(symbols: str = Query(default='THB')):
+    """Units of each currency per 1 USD, e.g. {"rates": {"USD": 1, "THB": 33.58}}."""
+    currencies = []
+    for raw in symbols.split(','):
+        code = raw.strip().upper()
+        if len(code) == 3 and code.isalpha() and code not in currencies and code != 'USD':
+            currencies.append(code)
+    if len(currencies) > 20:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Too many currencies (max 20)')
+    return await run_in_threadpool(_fetch_fx_rates, currencies)
+
+
+_FX_HISTORY_TTL_S = {'day': 60, 'month': 10 * 60, 'year': 60 * 60, 'all': 6 * 60 * 60}
+_fx_history_cache: dict = {}
+
+
+def _fetch_fx_history_series(currency: str, range_name: str) -> List[dict]:
+    """USD->currency rates over the same window/interval the price chart uses."""
+    key = (currency, range_name)
+    now = time.monotonic()
+    cached = _fx_history_cache.get(key)
+    if cached and now < cached[0]:
+        return cached[1]
+
+    period, interval = _RANGE_MAP[range_name]
+    with httpx.Client(timeout=15.0, headers=_YAHOO_HEADERS, follow_redirects=True) as client:
+        response = client.get(
+            f'https://query1.finance.yahoo.com/v8/finance/chart/{currency}=X',
+            params={'range': period, 'interval': interval, 'includePrePost': 'false'},
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+    results = (payload.get('chart') or {}).get('result') or []
+    if not results:
+        raise ValueError(f'fx_history_unavailable for {currency}')
+    result = results[0] or {}
+    if str((result.get('meta') or {}).get('currency') or '').upper() != currency:
+        raise ValueError(f'fx_history_currency_mismatch for {currency}')
+    closes = (((result.get('indicators') or {}).get('quote') or [{}])[0] or {}).get('close') or []
+
+    points = []
+    for ts, rate in zip(result.get('timestamp') or [], closes):
+        rate = _none_if_nan(rate)
+        if rate is not None and rate > 0:
+            points.append({'t': _epoch_to_iso(ts), 'rate': float(rate)})
+    if not points:
+        raise ValueError(f'fx_history_empty for {currency}')
+
+    _fx_history_cache[key] = (now + _FX_HISTORY_TTL_S[range_name], points)
+    return points
+
+
+def _fetch_fx_history(currencies: List[str], range_name: str) -> dict:
+    series = {}
+    unavailable = []
+    for currency in currencies:
+        try:
+            series[currency] = _fetch_fx_history_series(currency, range_name)
+        except Exception as exc:
+            logger.warning('fx_history_failed currency=%s range=%s error=%s', currency, range_name, exc)
+            unavailable.append(currency)
+    return {
+        'base': 'USD',
+        'range': range_name,
+        'source': 'Yahoo Finance',
+        'series': series,
+        'unavailable': unavailable,
+    }
+
+
+@router.get('/fx/history')
+async def get_fx_history(symbols: str = Query(default='THB'), range: str = Query(default='month')):
+    """Historical units of each currency per 1 USD, aligned to the chart ranges (day/month/year/all)."""
+    currencies = []
+    for raw in symbols.split(','):
+        code = raw.strip().upper()
+        if len(code) == 3 and code.isalpha() and code not in currencies and code != 'USD':
+            currencies.append(code)
+    if len(currencies) > 5:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Too many currencies (max 5)')
+    return await run_in_threadpool(_fetch_fx_history, currencies, _normalize_range(range))
 
 
 @router.get('/quotes')
@@ -562,7 +844,8 @@ async def get_asset_statistics(symbol: str):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        # Upstream data provider failure, not a client error.
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
 
 @router.get('/chart/{symbol}')

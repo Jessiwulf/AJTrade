@@ -125,13 +125,13 @@ export default function WatchlistPage() {
         <section className={styles.card} aria-label="Add watchlist item">
           <p className={styles.cardTitle}>Add Asset</p>
           <div className={styles.field}>
-            <div className={styles.label}>Ticker symbol</div>
+            <div className={styles.label}>Ticker symbol (stocks: AAPL · crypto: BTC-USD, ETH-USD, XRP-USD)</div>
             <div className={styles.rowWrap}>
               <input
                 className={styles.input}
                 value={symbol}
                 onChange={(e) => setSymbol(e.target.value)}
-                placeholder="AAPL"
+                placeholder="AAPL or BTC-USD"
                 autoCapitalize="characters"
                 aria-label="Ticker symbol"
               />

@@ -40,30 +40,8 @@ const NAV_ITEMS = [
     ),
   },
   {
-    href: '/analytics',
-    label: 'Analytics',
-    icon: (
-      <NavIcon>
-        <polyline points="2 17 6 9 10 13 14 4 18 8" />
-        <line x1="2" y1="17" x2="22" y2="17" />
-      </NavIcon>
-    ),
-  },
-  {
-    href: '/ai-performance',
-    label: 'AI Performance',
-    icon: (
-      <NavIcon>
-        <path d="M4 19V5" />
-        <path d="M10 19V9" />
-        <path d="M16 19V12" />
-        <path d="M22 19V7" />
-      </NavIcon>
-    ),
-  },
-  {
     href: '/markets',
-    label: 'Markets',
+    label: 'Markets News',
     icon: (
       <NavIcon>
         <rect x="3" y="14" width="4" height="7" />
@@ -74,7 +52,7 @@ const NAV_ITEMS = [
   },
   {
     href: '/insights',
-    label: 'Insights',
+    label: 'AI Insights',
     icon: (
       <NavIcon>
         <circle cx="12" cy="9" r="4" />
@@ -85,7 +63,7 @@ const NAV_ITEMS = [
   },
   {
     href: '/automated',
-    label: 'Automated',
+    label: 'Auto Trade',
     icon: (
       <NavIcon>
         <rect x="5" y="9" width="14" height="11" rx="2" />
@@ -111,6 +89,28 @@ const NAV_ITEMS = [
       <NavIcon>
         <rect x="2" y="7" width="20" height="14" rx="2" />
         <path d="M7 7V5a2 2 0 012-2h6a2 2 0 012 2v2" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/analytics',
+    label: 'Analytics',
+    icon: (
+      <NavIcon>
+        <polyline points="2 17 6 9 10 13 14 4 18 8" />
+        <line x1="2" y1="17" x2="22" y2="17" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/ai-performance',
+    label: 'AI Performance',
+    icon: (
+      <NavIcon>
+        <path d="M4 19V5" />
+        <path d="M10 19V9" />
+        <path d="M16 19V12" />
+        <path d="M22 19V7" />
       </NavIcon>
     ),
   },
@@ -322,15 +322,18 @@ export default function AppShell({ title, subtitle, children }) {
           })}
         </nav>
 
-        <button
-          type="button"
-          className={styles.navToggle}
-          onClick={() => setIsNavOpen((p) => !p)}
-          aria-label={isNavOpen ? 'Collapse navigation' : 'Expand navigation'}
-          title={isNavOpen ? 'Collapse navigation' : 'Expand navigation'}
-        >
-          {isNavOpen ? '\u2039' : '\u203a'}
-        </button>
+        {/* Right under the menu (separated by a divider) so it's reachable without scrolling. */}
+        <div className={styles.navToggleRow}>
+          <button
+            type="button"
+            className={styles.navToggle}
+            onClick={() => setIsNavOpen((p) => !p)}
+            aria-label={isNavOpen ? 'Collapse navigation' : 'Expand navigation'}
+            title={isNavOpen ? 'Collapse navigation' : 'Expand navigation'}
+          >
+            {isNavOpen ? '\u2039' : '\u203a'}
+          </button>
+        </div>
       </aside>
 
       <SessionContext.Provider value={session}>

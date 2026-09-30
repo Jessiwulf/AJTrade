@@ -1,0 +1,84 @@
+.infoTip {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.infoBtn {
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+  color: var(--aj-indigo);
+  font-size: 11px;
+  font-weight: 900;
+  font-style: italic;
+  font-family: Georgia, serif;
+  line-height: 1;
+  cursor: help;
+  transition: background 0.2s, transform 0.2s;
+}
+
+.infoTip:hover .infoBtn,
+.infoBtn:focus-visible {
+  background: var(--aj-cta-gradient);
+  transform: scale(1.08);
+}
+
+.tooltip {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 10px);
+  left: -12px;
+  width: 320px;
+  max-width: calc(100vw - 48px);
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--aj-radius-sm);
+  background: var(--aj-bg);
+  border: 1px solid var(--aj-border);
+  box-shadow: var(--aj-shadow-md);
+  color: var(--aj-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+}
+
+.alignEnd {
+  left: auto;
+  right: -12px;
+}
+
+.infoTip:hover .tooltip,
+.infoTip:focus-within .tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+}
+
+.tooltip strong {
+  color: var(--aj-indigo);
+}
+
+.tooltip code {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--aj-surface);
+  font-size: 11.5px;
+}

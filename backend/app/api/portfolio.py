@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.api.auth import get_current_user
-from app.core.alpaca import get_alpaca_account, get_alpaca_positions, submit_alpaca_order
+from app.core.alpaca import get_alpaca_account, get_alpaca_positions, list_alpaca_filled_orders, submit_alpaca_order
 from app.core.db import get_database
 
 router = APIRouter()
@@ -19,7 +20,8 @@ _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,24}$")
 
 
 def _normalize_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
+    # "BTC/USD" (Alpaca's crypto form) -> "BTC-USD" (the form used across the app).
+    return (symbol or "").strip().upper().replace("/", "-")
 
 
 async def _validate_symbol(symbol: str) -> None:
@@ -284,6 +286,143 @@ async def get_paper_account(user=Depends(get_current_user)):
     }
 
 
+_HISTORY_SCHEMA_READY = False
+
+
+async def _ensure_history_schema(db) -> None:
+    global _HISTORY_SCHEMA_READY
+    if _HISTORY_SCHEMA_READY:
+        return
+    await db.execute(query="ALTER TABLE trading_history ADD COLUMN IF NOT EXISTS broker_order_id text")
+    await db.execute(
+        query=(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trading_history_broker_order "
+            "ON trading_history(portfolio_id, broker_order_id)"
+        )
+    )
+    _HISTORY_SCHEMA_READY = True
+
+
+def _order_source(client_order_id: str) -> str:
+    """Who placed the order: the AJTrade bot, the AJTrade trade ticket, or elsewhere (Alpaca's site/API)."""
+    client_order_id = str(client_order_id or "")
+    if client_order_id.startswith("ajbot-"):
+        return "bot"
+    if client_order_id.startswith("ajtrade-"):
+        return "manual"
+    return "alpaca"
+
+
+def _parse_alpaca_time(value: Any) -> Optional[datetime]:
+    """Alpaca timestamps ("2026-06-17T13:31:06.065077Z", sometimes with nanoseconds) -> aware datetime."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    # Python accepts at most 6 fractional digits.
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def sync_trade_history_from_alpaca(db, owner: str) -> int:
+    """Makes trading_history mirror the account's filled Alpaca orders (actual fill price and quantity).
+
+    Realized P/L on sells uses the average-cost method over the fills in order; a sell whose buys are not
+    in the fetched history gets no P/L rather than a guessed one. Rows not backed by an Alpaca order
+    (simulated, seeded or estimated entries) are removed. Returns the number of new fills recorded.
+    """
+    await _ensure_history_schema(db)
+    orders = await list_alpaca_filled_orders(owner)
+    portfolio = await _get_owner_portfolio(db, owner)
+    if not portfolio:
+        await _sync_portfolio_from_alpaca(db, owner, add_to_watchlist=False)
+        portfolio = await _get_owner_portfolio(db, owner)
+    if not portfolio:
+        return 0
+    portfolio_id = portfolio["id"]
+
+    fills = sorted(orders, key=lambda o: str(o.get("filled_at") or o.get("submitted_at") or ""))
+    holdings: Dict[str, List[Decimal]] = {}  # symbol -> [quantity, average cost]
+    rows = []
+    for order in fills:
+        symbol = _normalize_symbol(str(order.get("symbol") or ""))
+        side = str(order.get("side") or "").upper()
+        if not symbol or side not in {"BUY", "SELL"}:
+            continue
+        quantity = Decimal(_decimal_string(order.get("filled_qty"), "0"))
+        price = Decimal(_decimal_string(order.get("filled_avg_price"), "0"))
+        if quantity <= 0 or price <= 0:
+            continue
+        held_qty, avg_cost = holdings.get(symbol, [Decimal("0"), Decimal("0")])
+        realized_pl = None
+        if side == "BUY":
+            new_qty = held_qty + quantity
+            avg_cost = ((held_qty * avg_cost) + (quantity * price)) / new_qty
+            held_qty = new_qty
+        else:
+            if held_qty > 0:
+                matched = min(quantity, held_qty)
+                realized_pl = ((price - avg_cost) * matched).quantize(Decimal("0.01"))
+                held_qty -= matched
+        holdings[symbol] = [held_qty, avg_cost]
+        rows.append(
+            {
+                "portfolio_id": portfolio_id,
+                "symbol": symbol,
+                "trade_type": side,
+                "quantity": quantity,
+                "price": price,
+                "notional": (quantity * price).quantize(Decimal("0.01")),
+                "pl": realized_pl,
+                "signal_source": _order_source(order.get("client_order_id")),
+                "notes": f"Alpaca order {order.get('id')}",
+                "broker_order_id": str(order.get("id")),
+                "created_at": _parse_alpaca_time(order.get("filled_at") or order.get("submitted_at")),
+            }
+        )
+
+    async with db.transaction():
+        await db.execute(
+            query="DELETE FROM trading_history WHERE portfolio_id = :pid AND broker_order_id IS NULL",
+            values={"pid": portfolio_id},
+        )
+        existing = await db.fetch_all(
+            query="SELECT broker_order_id FROM trading_history WHERE portfolio_id = :pid",
+            values={"pid": portfolio_id},
+        )
+        known = {r["broker_order_id"] for r in existing}
+        new_rows = [r for r in rows if r["broker_order_id"] not in known]
+        if new_rows:
+            await db.execute_many(
+                query=(
+                    "INSERT INTO trading_history "
+                    "(portfolio_id, symbol, trade_type, quantity, price, notional, fee, pl, signal_source, notes, broker_order_id, created_at) "
+                    "VALUES (:portfolio_id, :symbol, :trade_type, :quantity, :price, :notional, 0, :pl, :signal_source, :notes, "
+                    ":broker_order_id, COALESCE(:created_at, now())) "
+                    "ON CONFLICT (portfolio_id, broker_order_id) DO NOTHING"
+                ),
+                values=new_rows,
+            )
+    return len(new_rows)
+
+
+async def sync_account_from_alpaca(db, owner: str) -> Dict[str, Any]:
+    """Cash, positions and trade history, all from Alpaca."""
+    result = await _sync_portfolio_from_alpaca(db, owner)
+    try:
+        result["new_fills"] = await sync_trade_history_from_alpaca(db, owner)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("trade_history_sync_failed owner=%s error=%s", owner, exc)
+        result["new_fills"] = None
+    return result
+
+
 @router.post('/sync-paper')
 async def sync_paper_portfolio(user=Depends(get_current_user)):
     try:
@@ -296,7 +435,7 @@ async def sync_paper_portfolio(user=Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user")
 
     try:
-        return await _sync_portfolio_from_alpaca(db, owner)
+        return await sync_account_from_alpaca(db, owner)
     except HTTPException:
         raise
     except Exception as e:
@@ -325,13 +464,6 @@ async def place_paper_order(payload: PaperOrderIn, user=Depends(get_current_user
     if side == "SELL" and payload.quantity is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SELL orders require quantity")
 
-    try:
-        from app.api.market import get_market_price
-
-        market_price = Decimal(str(await get_market_price(symbol)))
-    except Exception:
-        market_price = Decimal("0")
-
     order = await submit_alpaca_order(
         owner,
         symbol=symbol,
@@ -341,53 +473,19 @@ async def place_paper_order(payload: PaperOrderIn, user=Depends(get_current_user
         client_order_id=f"ajtrade-{uuid4().hex[:24]}",
     )
 
-    portfolio = await _ensure_owner_portfolio(db, owner, Decimal("0"))
-    qty_value = order.get("qty") or payload.quantity
-    filled_price_value = order.get("filled_avg_price") or order.get("limit_price") or market_price or 0
-    notional_value = order.get("notional") or payload.notional
-
-    quantity = Decimal(_decimal_string(qty_value, "0"))
-    price = Decimal(_decimal_string(filled_price_value, "0"))
-    if notional_value is None and quantity > 0 and price > 0:
-        notional = quantity * price
-    else:
-        notional = Decimal(_decimal_string(notional_value, "0"))
-    if quantity == 0 and notional > 0 and price > 0:
-        quantity = notional / price
-
-    trade_row = await _log_trade(
-        db,
-        portfolio_id=str(portfolio["id"]),
-        symbol=symbol,
-        trade_type=side,
-        quantity=quantity,
-        price=price,
-        notional=notional,
-        signal_source="manual",
-        notes=payload.notes or f"Alpaca paper order {order.get('id')}",
-    )
     await _upsert_watchlist_symbol(db, owner, symbol)
+    # The trade history is taken from Alpaca's actual fill (not an estimate made here); an order that is
+    # still open (e.g. market closed) appears once it fills and the account is synced again.
     sync_result = None
     sync_error = None
     try:
-        sync_result = await _sync_portfolio_from_alpaca(db, owner)
+        sync_result = await sync_account_from_alpaca(db, owner)
     except HTTPException as exc:
         sync_error = str(exc.detail or exc)
         logger.warning('paper_order_sync_pending owner=%s symbol=%s status=%s error=%s', owner, symbol, order.get('status'), sync_error)
     except Exception as exc:
         sync_error = str(exc)
         logger.warning('paper_order_sync_pending owner=%s symbol=%s status=%s error=%s', owner, symbol, order.get('status'), sync_error)
-
-    created_at_value = trade_row.get("created_at")
-    created_at_iso = None
-    if created_at_value is not None:
-        try:
-            if hasattr(created_at_value, 'isoformat'):
-                created_at_iso = created_at_value.isoformat()
-            else:
-                created_at_iso = str(created_at_value)
-        except Exception:
-            created_at_iso = str(created_at_value)
 
     return {
         "order": {
@@ -396,14 +494,11 @@ async def place_paper_order(payload: PaperOrderIn, user=Depends(get_current_user
             "symbol": order.get("symbol") or symbol,
             "side": order.get("side") or side.lower(),
             "status": order.get("status"),
-            "qty": _decimal_string(order.get("qty"), str(quantity)),
-            "notional": _decimal_string(order.get("notional"), str(notional)),
-            "filled_avg_price": _decimal_string(order.get("filled_avg_price"), str(price)),
+            "qty": order.get("qty"),
+            "notional": order.get("notional"),
+            "filled_qty": order.get("filled_qty"),
+            "filled_avg_price": order.get("filled_avg_price"),
             "submitted_at": order.get("submitted_at"),
-        },
-        "transaction": {
-            "id": str(trade_row["id"]),
-            "created_at": created_at_iso,
         },
         "sync": sync_result,
         "sync_status": "synced" if sync_result else "pending",

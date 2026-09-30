@@ -1,0 +1,296 @@
+/* Animated feature illustrations (landing page). One 6s loop; paused until on screen. */
+
+.art {
+  --cycle: 6s;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.art * {
+  animation-play-state: paused;
+}
+
+.art.on * {
+  animation-play-state: running;
+}
+
+.label {
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.small {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.tiny {
+  font-weight: 900;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.sign {
+  font-weight: 900;
+  font-size: 18px;
+}
+
+.question {
+  font-weight: 900;
+  font-size: 30px;
+}
+
+/* Draw a stroke, hold, then fade before the next loop. */
+.draw {
+  fill: none;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: draw var(--cycle) cubic-bezier(0.65, 0, 0.35, 1) var(--d, 0s) infinite;
+}
+
+@keyframes draw {
+  0% { stroke-dashoffset: 1; opacity: 1; }
+  18% { stroke-dashoffset: 0; }
+  86% { stroke-dashoffset: 0; opacity: 1; }
+  96%, 100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+/* Pop in with a little bounce. */
+.pop {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pop var(--cycle) cubic-bezier(0.34, 1.56, 0.64, 1) var(--d, 0s) infinite;
+}
+
+@keyframes pop {
+  0% { transform: scale(0); opacity: 0; }
+  8% { transform: scale(1); opacity: 1; }
+  86% { transform: scale(1); opacity: 1; }
+  96%, 100% { transform: scale(0.85); opacity: 0; }
+}
+
+.fadeIn {
+  animation: fadeIn var(--cycle) ease var(--d, 0s) infinite;
+}
+
+@keyframes fadeIn {
+  0% { opacity: 0; }
+  10% { opacity: 1; }
+  86% { opacity: 1; }
+  96%, 100% { opacity: 0; }
+}
+
+.growY {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: growY var(--cycle) cubic-bezier(0.34, 1.3, 0.64, 1) var(--d, 0s) infinite;
+}
+
+@keyframes growY {
+  0% { transform: scaleY(0); opacity: 0; }
+  10% { transform: scaleY(1); opacity: 1; }
+  86% { transform: scaleY(1); opacity: 1; }
+  96%, 100% { transform: scaleY(1); opacity: 0; }
+}
+
+.growRight,
+.growLeft {
+  transform-box: fill-box;
+  animation: growX var(--cycle) cubic-bezier(0.34, 1.3, 0.64, 1) var(--d, 0s) infinite;
+}
+
+.growRight { transform-origin: 0% 50%; }
+.growLeft { transform-origin: 100% 50%; }
+
+@keyframes growX {
+  0% { transform: scaleX(0); }
+  12% { transform: scaleX(1); }
+  86% { transform: scaleX(1); opacity: 1; }
+  96%, 100% { transform: scaleX(1); opacity: 0; }
+}
+
+/* Marching dashes for the forecast line. */
+.flow {
+  animation: fadeIn var(--cycle) ease var(--d, 0s) infinite, flow 1.2s linear infinite;
+}
+
+@keyframes flow {
+  to { stroke-dashoffset: -36; }
+}
+
+.pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pulse 1.6s ease-out var(--d, 0s) infinite;
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.5); opacity: 0.8; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+.twinkle {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: twinkle 2.4s ease-in-out var(--d, 0s) infinite;
+}
+
+@keyframes twinkle {
+  0%, 100% { transform: scale(0.4) rotate(0deg); opacity: 0.2; }
+  50% { transform: scale(1) rotate(45deg); opacity: 1; }
+}
+
+.float {
+  animation: float 4s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+
+.spin {
+  animation: spin 6s linear infinite;
+}
+
+.spinRev {
+  animation: spin 4s linear infinite reverse;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: blink 3.2s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 44%, 52%, 100% { transform: scaleY(1); }
+  48% { transform: scaleY(0.1); }
+}
+
+.blinkBulb {
+  animation: bulb 1.4s ease-in-out infinite;
+}
+
+@keyframes bulb {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Robot's waving arm (shoulder at 280,186). */
+.wave {
+  transform-box: view-box;
+  transform-origin: 280px 186px;
+  animation: wave 1.6s ease-in-out infinite;
+}
+
+@keyframes wave {
+  0%, 100% { transform: rotate(-18deg); }
+  50% { transform: rotate(12deg); }
+}
+
+/* Order ticket travels from the robot's hand to the broker. */
+.ticket {
+  animation: ticket var(--cycle) cubic-bezier(0.65, 0, 0.35, 1) var(--d, 0s) infinite;
+}
+
+@keyframes ticket {
+  0% { transform: translate(0, 0) scale(1); opacity: 0; }
+  6% { opacity: 1; }
+  22% { transform: translate(94px, 18px) scale(0.8); opacity: 1; }
+  28%, 100% { transform: translate(100px, 30px) scale(0.6); opacity: 0; }
+}
+
+/* Sentiment gauge needle (pivot at 382,214). */
+.needle {
+  transform-box: view-box;
+  transform-origin: 382px 214px;
+  animation: needle var(--cycle) cubic-bezier(0.34, 1.56, 0.64, 1) 0.9s infinite;
+}
+
+@keyframes needle {
+  0% { transform: rotate(-80deg); }
+  12% { transform: rotate(-30deg); }
+  22% { transform: rotate(52deg); }
+  30%, 86% { transform: rotate(40deg); }
+  100% { transform: rotate(-80deg); }
+}
+
+/* Magnifying glass scanning the SHAP bars. */
+.glass {
+  animation: glass var(--cycle) ease-in-out infinite;
+}
+
+@keyframes glass {
+  0%, 100% { transform: translate(140px, 150px); }
+  25% { transform: translate(330px, 112px); }
+  50% { transform: translate(200px, 150px); }
+  75% { transform: translate(300px, 200px); }
+}
+
+.bulb {
+  animation: bulb 1.8s ease-in-out infinite;
+}
+
+.rays {
+  animation: twinkleRays 1.8s ease-in-out infinite;
+}
+
+@keyframes twinkleRays {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 1; }
+}
+
+/* Chat typing indicator: visible between the question and the answer. */
+.typing {
+  opacity: 0;
+  animation: typing var(--cycle) linear var(--d, 0s) infinite;
+}
+
+@keyframes typing {
+  0% { opacity: 0; }
+  3%, 22% { opacity: 1; }
+  24%, 100% { opacity: 0; }
+}
+
+.dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bounce 0.9s ease-in-out var(--d, 0s) infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .art * {
+    animation: none !important;
+  }
+
+  .draw {
+    stroke-dashoffset: 0;
+  }
+
+  .typing,
+  .ticket,
+  .pulse {
+    opacity: 0;
+  }
+
+  .needle {
+    transform: rotate(40deg);
+  }
+
+  .glass {
+    transform: translate(330px, 112px);
+  }
+}

@@ -30,8 +30,6 @@ const ASSET_LABELS = {
   META: 'Meta',
 }
 
-const FX_USD_TO_THB = 35.5
-
 const ALLOCATION_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#22c55e', '#ec4899', '#14b8a6']
 
 const WATCHLIST_SORT_MODES = {
@@ -134,6 +132,7 @@ function normalizeWatchlist(payload) {
 function normalizeKeyStatistics(payload) {
   const src = payload?.stats || payload?.data || payload?.quote || payload || {}
   return {
+    currency: src?.currency || null,
     latest_price: toFiniteNumber(src?.latest_price ?? src?.latestPrice ?? src?.price ?? src?.currentPrice),
     previous_close: toFiniteNumber(src?.previous_close ?? src?.previousClose),
     open: toFiniteNumber(src?.open),
@@ -190,25 +189,133 @@ function formatPrice(value) {
   })
 }
 
-function convertCurrency(value, currency) {
-  const amount = Number(value)
-  if (!Number.isFinite(amount)) return null
-  if (currency === 'THB') return amount * FX_USD_TO_THB
-  return amount
+// Live rates come from /api/market/fx as units of each currency per 1 USD.
+// Until they load (or if a rate is unavailable) only same-currency amounts are shown.
+const DEFAULT_FX_RATES = { USD: 1 }
+const DISPLAY_CURRENCIES = ['USD', 'THB']
+
+// Yahoo quotes some exchanges in minor units (e.g. London in pence as "GBp").
+const MINOR_UNIT_CURRENCIES = { GBp: 'GBP', GBX: 'GBP', ZAc: 'ZAR', ILA: 'ILS' }
+
+function normalizeCurrencyCode(code, fallback = 'USD') {
+  const text = String(code || '').trim()
+  return MINOR_UNIT_CURRENCIES[text] || text.toUpperCase() || fallback
 }
 
-function formatCurrencyValue(value, currency, minimumFractionDigits = 2, maximumFractionDigits = 2) {
-  const converted = convertCurrency(value, currency)
+function minorUnitDivisor(code) {
+  return MINOR_UNIT_CURRENCIES[String(code || '').trim()] ? 100 : 1
+}
+
+function canConvert(from, to, rates = DEFAULT_FX_RATES) {
+  return from === to || (Number(rates?.[from]) > 0 && Number(rates?.[to]) > 0)
+}
+
+// Currency a value is actually shown in: the display currency when we have a rate,
+// otherwise the asset's native currency (never relabel an unconverted number).
+function resolveDisplayCurrency(to, from = 'USD', rates = DEFAULT_FX_RATES) {
+  const source = normalizeCurrencyCode(from)
+  const target = normalizeCurrencyCode(to)
+  return canConvert(source, target, rates) ? target : source
+}
+
+// Converts an amount quoted in `from` into `to`. Unsupported pairs are returned unchanged.
+function convertCurrency(value, to, from = 'USD', rates = DEFAULT_FX_RATES) {
+  // Number(null) and Number('') are 0; treat missing values as missing, not zero.
+  if (value == null || value === '') return null
+  const amount = Number(value) / minorUnitDivisor(from)
+  if (!Number.isFinite(amount)) return null
+  const source = normalizeCurrencyCode(from)
+  const target = normalizeCurrencyCode(to)
+  if (!canConvert(source, target, rates) || source === target) return amount
+  return (amount / Number(rates[source])) * Number(rates[target])
+}
+
+function formatCurrencyValue(value, currency, { from = 'USD', rates = DEFAULT_FX_RATES } = {}) {
+  const converted = convertCurrency(value, currency, from, rates)
   if (!Number.isFinite(converted)) return '—'
-  return converted.toLocaleString(undefined, {
-    style: 'currency',
-    currency,
-    minimumFractionDigits,
-    maximumFractionDigits,
-  })
+  const displayCurrency = resolveDisplayCurrency(currency, from, rates)
+  try {
+    return converted.toLocaleString(undefined, {
+      style: 'currency',
+      currency: displayCurrency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+  } catch {
+    // Non-ISO codes from the data feed (e.g. "GBp") would make Intl throw.
+    return `${converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${displayCurrency}`
+  }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+// How old the latest FX observation may be for a price point (FX data is daily/monthly per range).
+const FX_HISTORY_MAX_AGE_MS = { day: DAY_MS, month: 7 * DAY_MS, year: 7 * DAY_MS, all: 45 * DAY_MS }
+// A price may borrow the first FX observation only if it is at most this much later (bar-alignment slack).
+const FX_HISTORY_MAX_LEAD_MS = DAY_MS
+
+function formatFxRate(value) {
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 })
+}
+
+// Builds time -> { multiplier, label } using the USD-based FX rate in effect at that time.
+// Returns null when the needed history is missing; a point outside FX coverage maps to null.
+function buildHistoricalConverter({ series, from, to, range }) {
+  const source = normalizeCurrencyCode(from)
+  const target = normalizeCurrencyCode(to)
+  const divisor = minorUnitDivisor(from)
+  if (source === target) return () => ({ multiplier: 1 / divisor, label: null })
+
+  const observations = {}
+  for (const code of [source, target]) {
+    if (code === 'USD') continue
+    const points = (Array.isArray(series?.[code]) ? series[code] : [])
+      .map((point) => [Date.parse(point.t), Number(point.rate)])
+      .filter(([time, rate]) => Number.isFinite(time) && rate > 0)
+      .sort((a, b) => a[0] - b[0])
+    if (!points.length) return null
+    observations[code] = points
+  }
+
+  const maxAge = FX_HISTORY_MAX_AGE_MS[range] ?? 7 * DAY_MS
+  const rateAt = (code, time) => {
+    if (code === 'USD') return 1
+    const obs = observations[code]
+    let lo = 0
+    let hi = obs.length - 1
+    let idx = -1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (obs[mid][0] <= time) {
+        idx = mid
+        lo = mid + 1
+      } else {
+        hi = mid - 1
+      }
+    }
+    if (idx === -1) return obs[0][0] - time <= FX_HISTORY_MAX_LEAD_MS ? obs[0][1] : null
+    return time - obs[idx][0] <= maxAge ? obs[idx][1] : null
+  }
+
+  const latestRate = (code) => (code === 'USD' ? 1 : observations[code][observations[code].length - 1][1])
+
+  // `isLatest`: the chart's final bar carries the live price, so it takes the latest FX tick
+  // (Yahoo stamps the in-progress FX bar with its live tick time, which sorts after the bar start).
+  return (timeValue, { isLatest = false } = {}) => {
+    const time = Date.parse(timeValue)
+    if (!Number.isFinite(time)) return null
+    const sourcePerUsd = isLatest ? latestRate(source) : rateAt(source, time)
+    const targetPerUsd = isLatest ? latestRate(target) : rateAt(target, time)
+    if (sourcePerUsd == null || targetPerUsd == null) return null
+    let label
+    if (source === 'USD') label = `1 USD = ${formatFxRate(targetPerUsd)} ${target}`
+    else if (target === 'USD') label = `1 USD = ${formatFxRate(sourcePerUsd)} ${source}`
+    else label = `1 ${source} = ${formatFxRate(targetPerUsd / sourcePerUsd)} ${target}`
+    return { multiplier: targetPerUsd / sourcePerUsd / divisor, label }
+  }
 }
 
 function toFiniteNumber(value, fallback = null) {
+  if (value == null || value === '') return fallback
   const amount = Number(value)
   return Number.isFinite(amount) ? amount : fallback
 }
@@ -228,13 +335,14 @@ function formatMetricNumber(value) {
   return amount.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
-function formatLargeCurrency(value, currency) {
-  const converted = convertCurrency(value, currency)
+function formatLargeCurrency(value, currency, { from = 'USD', rates = DEFAULT_FX_RATES } = {}) {
+  const converted = convertCurrency(value, currency, from, rates)
   if (!Number.isFinite(converted)) return '—'
-  if (Math.abs(converted) >= 1_000_000_000_000) return `${(converted / 1_000_000_000_000).toFixed(2)}T ${currency}`
-  if (Math.abs(converted) >= 1_000_000_000) return `${(converted / 1_000_000_000).toFixed(2)}B ${currency}`
-  if (Math.abs(converted) >= 1_000_000) return `${(converted / 1_000_000).toFixed(2)}M ${currency}`
-  return formatCurrencyValue(value, currency)
+  const displayCurrency = resolveDisplayCurrency(currency, from, rates)
+  if (Math.abs(converted) >= 1_000_000_000_000) return `${(converted / 1_000_000_000_000).toFixed(2)}T ${displayCurrency}`
+  if (Math.abs(converted) >= 1_000_000_000) return `${(converted / 1_000_000_000).toFixed(2)}B ${displayCurrency}`
+  if (Math.abs(converted) >= 1_000_000) return `${(converted / 1_000_000).toFixed(2)}M ${displayCurrency}`
+  return formatCurrencyValue(value, currency, { from, rates })
 }
 
 function formatPercentage(value) {
@@ -362,12 +470,32 @@ function ChartTooltip({ active, payload, currency }) {
   return (
     <div className={styles.chartTooltip}>
       <span className={styles.tooltipTime}>{point.fullLabel}</span>
-      <span className={styles.tooltipPrice}>{formatCurrencyValue(payload[0].value, currency)}</span>
+      <span className={styles.tooltipPrice}>{formatCurrencyValue(payload[0].value, currency, { from: currency })}</span>
+      {point.fxLabel ? <span className={styles.tooltipFx}>{point.fxLabel}</span> : null}
     </div>
   )
 }
 
-function PortfolioOverviewCard({ summary, currency, onCurrencyChange }) {
+function describeFxRate(fx, currency) {
+  if (currency === 'USD') return null
+  const detail = fx?.details?.[currency]
+  if (!detail) {
+    return fx?.loaded
+      ? { text: `Live USD/${currency} rate unavailable. Amounts shown in their original currency.`, warn: true }
+      : { text: 'Loading live exchange rate...', warn: false }
+  }
+  const time = detail.as_of
+    ? new Date(detail.as_of).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'unknown time'
+  const rate = Number(detail.rate).toLocaleString(undefined, { maximumFractionDigits: 4 })
+  return {
+    text: `1 USD = ${rate} ${currency} · ${detail.source} · ${time}${detail.stale ? ' (stale)' : ''}`,
+    warn: Boolean(detail.stale),
+  }
+}
+
+function PortfolioOverviewCard({ summary, currency, onCurrencyChange, fx }) {
+  const fxNote = describeFxRate(fx, currency)
   const hasData = Boolean(summary.allocation.length)
 
   return (
@@ -380,13 +508,15 @@ function PortfolioOverviewCard({ summary, currency, onCurrencyChange }) {
           onChange={(event) => onCurrencyChange(event.target.value)}
           aria-label="Currency toggle"
         >
-          <option value="USD">USD</option>
-          <option value="THB">THB</option>
+          {DISPLAY_CURRENCIES.map((code) => (
+            <option key={code} value={code}>{code}</option>
+          ))}
         </select>
       </div>
+      {fxNote ? <p className={`${styles.fxNote} ${fxNote.warn ? styles.fxNoteWarn : ''}`}>{fxNote.text}</p> : null}
       <div className={styles.portfolioMetrics}>
-        <p><span>Total Balance</span><strong>{formatCurrencyValue(summary.totalBalance, currency)}</strong></p>
-        <p><span>Total Value</span><strong>{formatCurrencyValue(summary.totalValue, currency)}</strong></p>
+        <p><span>Total Balance</span><strong>{formatCurrencyValue(summary.totalBalance, currency, { rates: fx?.rates })}</strong></p>
+        <p><span>Total Value</span><strong>{formatCurrencyValue(summary.totalValue, currency, { rates: fx?.rates })}</strong></p>
         <p><span>Performance (%)</span><strong className={summary.performancePct >= 0 ? styles.pos : styles.neg}>{formatSigned(summary.performancePct)}%</strong></p>
       </div>
       <div className={styles.allocationArea}>
@@ -436,6 +566,7 @@ function WatchlistSidebar({
   error,
   portfolioSummary,
   currency,
+  fx,
   onCurrencyChange,
   sortMode,
   isGrouped,
@@ -477,7 +608,7 @@ function WatchlistSidebar({
           />
         </svg>
         <div className={styles.watchNumbers}>
-          <strong>{formatCurrencyValue(asset.price, currency)}</strong>
+          <strong>{formatCurrencyValue(asset.price, currency, { from: asset.currency, rates: fx?.rates })}</strong>
           <span className={isPositive ? styles.pos : styles.neg}>{formatSigned(asset.changePct)}%</span>
         </div>
       </button>
@@ -486,13 +617,13 @@ function WatchlistSidebar({
 
   return (
     <aside className={styles.leftSidebar} aria-label="Watchlist">
-      <PortfolioOverviewCard summary={portfolioSummary} currency={currency} onCurrencyChange={onCurrencyChange} />
+      <PortfolioOverviewCard summary={portfolioSummary} currency={currency} onCurrencyChange={onCurrencyChange} fx={fx} />
       <div className={styles.sidebarHeader}>
         <h3 className={styles.sidebarTitle}>Watchlist</h3>
       </div>
       <div className={styles.watchlistActionBar}>
         <WatchlistActionButton
-          label="Edit"
+          label="Sort"
           onClick={onToggleSort}
           active={sortMode !== WATCHLIST_SORT_MODES.DEFAULT}
           title={`Sort: ${getWatchlistSortLabel(sortMode)}`}
@@ -545,7 +676,7 @@ function WatchlistSidebar({
   )
 }
 
-function AssetChart({ chartData, timeframe, onTimeframeChange, currency }) {
+function AssetChart({ chartData, timeframe, onTimeframeChange, currency, fxNote }) {
   return (
     <section className={styles.chartSection} aria-label="Price chart">
       <div className={styles.timeframeRow}>
@@ -608,6 +739,7 @@ function AssetChart({ chartData, timeframe, onTimeframeChange, currency }) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
+      {fxNote ? <p className={`${styles.chartFxNote} ${fxNote.warn ? styles.fxNoteWarn : ''}`}>{fxNote.text}</p> : null}
     </section>
   )
 }
@@ -710,6 +842,99 @@ function NewsAnalysisSection({ articles, loading, error }) {
   )
 }
 
+const LIST_ITEM_RE = /^\s*(?:[-*•]|\d+[.)])\s+/
+
+function normalizeChatText(raw) {
+  return String(raw || '')
+    .replace(/\r\n?/g, '\n')
+    // Small models sometimes inline list items: "...forces. - **Metrics**: ..." -> new line per item.
+    .replace(/([.!?:])[ \t]+[-•][ \t]+(?=\S)/g, '$1\n- ')
+    .replace(/[ \t]+-[ \t]+(?=\*\*)/g, '\n- ')
+    // Headings like "### Summary" read better as bold lines in a chat bubble.
+    .replace(/^\s*#{1,6}\s+(.+)$/gm, '**$1**')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function renderInline(text, keyPrefix) {
+  return text.split(/(\*\*[^*]+?\*\*)/g).filter(Boolean).map((part, index) => {
+    const bold = part.match(/^\*\*([^*]+?)\*\*$/)
+    if (bold) return <strong key={`${keyPrefix}-${index}`}>{bold[1]}</strong>
+    // Drop stray emphasis markers such as "****6.8****" or a lone "*".
+    return part.replace(/\*+/g, '')
+  })
+}
+
+function ChatMessageText({ text }) {
+  const lines = normalizeChatText(text).split('\n')
+  const blocks = []
+  let paragraph = []
+  let list = null
+
+  const flushParagraph = () => {
+    if (paragraph.length) blocks.push({ type: 'p', lines: paragraph })
+    paragraph = []
+  }
+  const flushList = () => {
+    if (list) blocks.push(list)
+    list = null
+  }
+
+  lines.forEach((line) => {
+    if (!line.trim()) {
+      flushParagraph()
+      flushList()
+      return
+    }
+    if (LIST_ITEM_RE.test(line)) {
+      flushParagraph()
+      const ordered = /^\s*\d/.test(line)
+      if (!list || list.ordered !== ordered) {
+        flushList()
+        list = { type: 'list', ordered, items: [] }
+      }
+      list.items.push(line.replace(LIST_ITEM_RE, ''))
+      return
+    }
+    if (list && /^\s{2,}\S/.test(line)) {
+      // Indented continuation of the previous list item.
+      list.items[list.items.length - 1] += ` ${line.trim()}`
+      return
+    }
+    flushList()
+    paragraph.push(line.trim())
+  })
+  flushParagraph()
+  flushList()
+
+  return (
+    <div className={styles.chatText}>
+      {blocks.map((block, blockIndex) => {
+        if (block.type === 'list') {
+          const ListTag = block.ordered ? 'ol' : 'ul'
+          return (
+            <ListTag key={blockIndex}>
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>{renderInline(item, `${blockIndex}-${itemIndex}`)}</li>
+              ))}
+            </ListTag>
+          )
+        }
+        return (
+          <p key={blockIndex}>
+            {block.lines.map((line, lineIndex) => (
+              <span key={lineIndex}>
+                {lineIndex > 0 ? <br /> : null}
+                {renderInline(line, `${blockIndex}-${lineIndex}`)}
+              </span>
+            ))}
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
 function AIAssistantSidebar({ selectedAsset }) {
   const [messages, setMessages] = useState([
     { id: 1, role: 'assistant', text: 'Hello. Ask me anything about your selected watchlist asset or the market in general.' },
@@ -776,7 +1001,7 @@ function AIAssistantSidebar({ selectedAsset }) {
       <div className={styles.chatHistory}>
         {messages.map((msg) => (
           <div key={msg.id} className={`${styles.chatBubble} ${msg.role === 'user' ? styles.chatUser : styles.chatAi}`}>
-            {msg.text}
+            {msg.role === 'user' ? msg.text : <ChatMessageText text={msg.text} />}
           </div>
         ))}
       </div>
@@ -852,33 +1077,35 @@ export default function Dashboard() {
   const { data: portfolioData } = useSWR(
     'dashboard-portfolio-state',
     async () => {
+      // The Alpaca paper account is the source of truth; the local copy is only a fallback when Alpaca
+      // cannot be reached (it is refreshed from Alpaca on every sync).
       try {
-        const localPortfolio = await apiFetch('/api/portfolio')
+        const paperPortfolio = await apiFetch('/api/portfolio/paper-account')
         return {
-          source: 'local',
-          cashBalance: toFiniteNumber(localPortfolio?.cash_balance, 0),
-          totalValue: null,
-          positions: Array.isArray(localPortfolio?.positions) ? localPortfolio.positions.map((position) => ({
+          source: 'paper',
+          cashBalance: toFiniteNumber(paperPortfolio?.cash, 0),
+          totalValue: toFiniteNumber(paperPortfolio?.portfolio_value, null),
+          positions: Array.isArray(paperPortfolio?.positions) ? paperPortfolio.positions.map((position) => ({
             symbol: String(position.symbol || '').toUpperCase(),
             quantity: toFiniteNumber(position.quantity, 0),
-            avgPrice: toFiniteNumber(position.avg_price, 0),
-            marketValue: null,
-            unrealizedPl: null,
+            avgPrice: toFiniteNumber(position.avg_entry_price, 0),
+            marketValue: toFiniteNumber(position.market_value, null),
+            unrealizedPl: toFiniteNumber(position.unrealized_pl, null),
           })) : [],
         }
       } catch {
         try {
-          const paperPortfolio = await apiFetch('/api/portfolio/paper-account')
+          const localPortfolio = await apiFetch('/api/portfolio')
           return {
-            source: 'paper',
-            cashBalance: toFiniteNumber(paperPortfolio?.cash, 0),
-            totalValue: toFiniteNumber(paperPortfolio?.portfolio_value, null),
-            positions: Array.isArray(paperPortfolio?.positions) ? paperPortfolio.positions.map((position) => ({
+            source: 'local',
+            cashBalance: toFiniteNumber(localPortfolio?.cash_balance, 0),
+            totalValue: null,
+            positions: Array.isArray(localPortfolio?.positions) ? localPortfolio.positions.map((position) => ({
               symbol: String(position.symbol || '').toUpperCase(),
               quantity: toFiniteNumber(position.quantity, 0),
-              avgPrice: toFiniteNumber(position.avg_entry_price, 0),
-              marketValue: toFiniteNumber(position.market_value, null),
-              unrealizedPl: toFiniteNumber(position.unrealized_pl, null),
+              avgPrice: toFiniteNumber(position.avg_price, 0),
+              marketValue: null,
+              unrealizedPl: null,
             })) : [],
           }
         } catch {
@@ -1007,6 +1234,7 @@ export default function Dashboard() {
         ticker: String(item.symbol || '').toUpperCase(),
         displayName: getAssetLabel(item.symbol),
         price: toFiniteNumber(snapshotQuote?.price, 0),
+        currency: snapshotQuote?.currency || 'USD',
         changePct: toFiniteNumber(snapshotQuote?.change_percent, 0),
         sparkline,
         notes: item.notes,
@@ -1025,15 +1253,99 @@ export default function Dashboard() {
     [selectedDetail, timeframe],
   )
 
-  const convertedChartData = useMemo(
-    () => chartData.map((point) => ({ ...point, price: convertCurrency(point.price, currency) })),
-    [chartData, currency],
+  // Prices from the feed are in the asset's own currency (e.g. THB for SET stocks).
+  const assetCurrency = keyStatistics?.currency || getDetailQuote(selectedDetail)?.currency || 'USD'
+
+  // Every currency we may need to convert between: display options plus each asset's own.
+  const fxSymbols = useMemo(() => {
+    const codes = new Set(DISPLAY_CURRENCIES)
+    watchlistAssets.forEach((asset) => codes.add(normalizeCurrencyCode(asset.currency)))
+    codes.add(normalizeCurrencyCode(assetCurrency))
+    codes.delete('USD')
+    return [...codes].sort().join(',')
+  }, [watchlistAssets, assetCurrency])
+
+  const { data: fxData, error: fxError } = useSWR(
+    fxSymbols ? `/api/market/fx?symbols=${fxSymbols}` : null,
+    (url) => apiFetch(url),
+    {
+      ...swrOptions,
+      keepPreviousData: true,
+      refreshInterval: 60 * 1000,
+      revalidateOnFocus: true,
+      revalidateIfStale: true,
+    },
   )
+  const fx = useMemo(() => ({
+    rates: { ...DEFAULT_FX_RATES, ...(fxData?.rates || {}) },
+    details: fxData?.details || {},
+    loaded: Boolean(fxData || fxError),
+  }), [fxData, fxError])
+
+  // Chart points are converted at the FX rate of their own date, not today's rate.
+  const chartSourceCurrency = normalizeCurrencyCode(assetCurrency)
+  const chartTargetCurrency = normalizeCurrencyCode(currency)
+  const chartNeedsFx = chartSourceCurrency !== chartTargetCurrency
+  const fxHistorySymbols = chartNeedsFx
+    ? [chartSourceCurrency, chartTargetCurrency].filter((code) => code !== 'USD').sort().join(',')
+    : ''
+  const { data: fxHistoryData, error: fxHistoryError } = useSWR(
+    selectedTicker && fxHistorySymbols ? `/api/market/fx/history?symbols=${fxHistorySymbols}&range=${currentRange}` : null,
+    (url) => apiFetch(url),
+    {
+      ...swrOptions,
+      refreshInterval: currentRange === 'day' ? 60 * 1000 : 0,
+    },
+  )
+  const historicalConverter = useMemo(() => {
+    if (!chartNeedsFx) return buildHistoricalConverter({ from: assetCurrency, to: currency })
+    // keepPreviousData may still hold another range's series; only use a matching one.
+    if (!fxHistoryData || fxHistoryData.range !== currentRange) return null
+    return buildHistoricalConverter({ series: fxHistoryData.series, from: assetCurrency, to: currency, range: currentRange })
+  }, [chartNeedsFx, fxHistoryData, assetCurrency, currency, currentRange])
+
+  // Without historical rates we show the chart in the asset's own currency rather than guess.
+  const chartCurrency = historicalConverter ? chartTargetCurrency : chartSourceCurrency
+
+  const { convertedChartData, excludedPoints } = useMemo(() => {
+    if (!historicalConverter) {
+      return {
+        convertedChartData: chartData.map((point) => ({ ...point, price: convertCurrency(point.price, chartSourceCurrency, assetCurrency) })),
+        excludedPoints: 0,
+      }
+    }
+    const converted = []
+    chartData.forEach((point, index) => {
+      const fxAtPoint = historicalConverter(point.time, { isLatest: index === chartData.length - 1 })
+      // No FX observation for that date: leave the point out instead of using another date's rate.
+      if (!fxAtPoint) return
+      converted.push({ ...point, price: point.price * fxAtPoint.multiplier, fxLabel: fxAtPoint.label })
+    })
+    return { convertedChartData: converted, excludedPoints: chartData.length - converted.length }
+  }, [chartData, historicalConverter, chartSourceCurrency, assetCurrency])
+
+  const chartFxNote = useMemo(() => {
+    if (!chartNeedsFx) return null
+    const pair = `${chartSourceCurrency}/${chartTargetCurrency}`
+    if (!historicalConverter) {
+      return fxHistoryError || (fxHistoryData && fxHistoryData.range === currentRange)
+        ? { text: `Historical ${pair} rates unavailable. Chart shown in ${chartSourceCurrency}.`, warn: true }
+        : { text: `Loading historical ${pair} rates...`, warn: false }
+    }
+    const parts = [`Each point converted at that date's ${pair} rate (${fxHistoryData?.source || 'Yahoo Finance'}).`]
+    if (excludedPoints > 0 && convertedChartData.length) {
+      const since = new Date(convertedChartData[0].time).toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
+      parts.push(`${excludedPoints} earlier point${excludedPoints === 1 ? '' : 's'} hidden: no exchange-rate history before ${since}.`)
+    } else if (excludedPoints > 0) {
+      parts.push('No exchange-rate history covers this period.')
+    }
+    return { text: parts.join(' '), warn: excludedPoints > 0 }
+  }, [chartNeedsFx, chartSourceCurrency, chartTargetCurrency, historicalConverter, fxHistoryError, fxHistoryData, currentRange, excludedPoints, convertedChartData])
 
   const selectedQuote = getDetailQuote(selectedDetail)
   const selectedChangePercent = toFiniteNumber(selectedQuote?.change_percent ?? selectedQuote?.changePercent)
   const livePrice = toFiniteNumber(selectedQuote?.price, 0)
-  const convertedLivePrice = convertCurrency(livePrice, currency) || 0
+  const convertedLivePrice = convertCurrency(livePrice, chartCurrency, assetCurrency, fx.rates) || 0
   const first = convertedChartData[0]?.price ?? convertedLivePrice
   const last = convertedChartData[convertedChartData.length - 1]?.price ?? convertedLivePrice
   const absChange = last - first
@@ -1122,28 +1434,28 @@ export default function Dashboard() {
         ? ((statisticsPrice - resolvedPreviousClose) / resolvedPreviousClose) * 100
         : null
     const dayRange = (Number.isFinite(resolvedDayLow) || Number.isFinite(resolvedDayHigh))
-      ? `${formatCurrencyValue(resolvedDayLow, currency)} - ${formatCurrencyValue(resolvedDayHigh, currency)}`
+      ? `${formatCurrencyValue(resolvedDayLow, currency, { from: assetCurrency, rates: fx.rates })} - ${formatCurrencyValue(resolvedDayHigh, currency, { from: assetCurrency, rates: fx.rates })}`
       : '—'
     const weekRange = (Number.isFinite(resolvedWeekLow) || Number.isFinite(resolvedWeekHigh))
-      ? `${formatCurrencyValue(resolvedWeekLow, currency)} - ${formatCurrencyValue(resolvedWeekHigh, currency)}`
+      ? `${formatCurrencyValue(resolvedWeekLow, currency, { from: assetCurrency, rates: fx.rates })} - ${formatCurrencyValue(resolvedWeekHigh, currency, { from: assetCurrency, rates: fx.rates })}`
       : '—'
 
     return [
-      { label: 'Live Price', value: formatCurrencyValue(statisticsPrice, currency) },
+      { label: 'Live Price', value: formatCurrencyValue(statisticsPrice, currency, { from: assetCurrency, rates: fx.rates }) },
       { label: 'Daily Change', value: Number.isFinite(derivedDailyChangePct) ? `${formatSigned(derivedDailyChangePct)}%` : '—' },
       { label: 'Volume', value: formatMetricNumber(resolvedVolume) },
-      { label: 'Prev. Close', value: formatCurrencyValue(resolvedPreviousClose, currency) },
-      { label: 'Open', value: formatCurrencyValue(resolvedOpen, currency) },
+      { label: 'Prev. Close', value: formatCurrencyValue(resolvedPreviousClose, currency, { from: assetCurrency, rates: fx.rates }) },
+      { label: 'Open', value: formatCurrencyValue(resolvedOpen, currency, { from: assetCurrency, rates: fx.rates }) },
       { label: "Day's Range", value: dayRange },
       { label: '52 wk Range', value: weekRange },
-      { label: 'Market Cap', value: formatLargeCurrency(resolvedMarketCap, currency) },
-      { label: 'Revenue', value: formatLargeCurrency(resolvedRevenue, currency) },
-      { label: 'Net Income', value: formatLargeCurrency(resolvedNetIncome, currency) },
-      { label: 'EPS', value: formatCurrencyValue(resolvedEps, currency) },
+      { label: 'Market Cap', value: formatLargeCurrency(resolvedMarketCap, currency, { from: assetCurrency, rates: fx.rates }) },
+      { label: 'Revenue', value: formatLargeCurrency(resolvedRevenue, currency, { from: assetCurrency, rates: fx.rates }) },
+      { label: 'Net Income', value: formatLargeCurrency(resolvedNetIncome, currency, { from: assetCurrency, rates: fx.rates }) },
+      { label: 'EPS', value: formatCurrencyValue(resolvedEps, currency, { from: assetCurrency, rates: fx.rates }) },
       { label: 'P/E Ratio', value: Number.isFinite(resolvedPeRatio) ? resolvedPeRatio.toFixed(2) : '—' },
       { label: 'Beta', value: Number.isFinite(resolvedBeta) ? resolvedBeta.toFixed(2) : '—' },
     ]
-  }, [keyStatistics, currency, selectedQuote, selectedDetail, selectedChangePercent])
+  }, [keyStatistics, currency, assetCurrency, fx.rates, selectedQuote, selectedDetail, selectedChangePercent])
 
   return (
     <AppShell title="Trade Dashboard" subtitle="Market deep dive and AI assistant">
@@ -1159,6 +1471,7 @@ export default function Dashboard() {
             error={watchlistError}
             portfolioSummary={portfolioOverview}
             currency={currency}
+            fx={fx}
             onCurrencyChange={setCurrency}
             sortMode={watchlistSortMode}
             isGrouped={isWatchlistGrouped}
@@ -1184,12 +1497,12 @@ export default function Dashboard() {
         <main className={styles.centerColumn} aria-label="Asset deep dive">
           <header className={styles.assetHeader}>
             <div className={styles.assetMeta}>
-              <p className={styles.assetPath}>Home / Markets / {selectedAsset?.ticker || 'Watchlist'} / {currency}</p>
+              <p className={styles.assetPath}>Home / Markets / {selectedAsset?.ticker || 'Watchlist'} / {chartCurrency}</p>
               <h2 className={styles.assetName}>{selectedAsset?.displayName || 'No asset selected'}</h2>
-              <p className={styles.assetTicker}>{selectedAsset?.ticker ? `${selectedAsset.ticker} / ${currency}` : 'Add an asset from the Watchlist page'}</p>
+              <p className={styles.assetTicker}>{selectedAsset?.ticker ? `${selectedAsset.ticker} / ${chartCurrency}` : 'Add an asset from the Watchlist page'}</p>
             </div>
             <div className={styles.priceBlock}>
-              <strong className={styles.currentPrice}>{formatCurrencyValue(last, currency)}</strong>
+              <strong className={styles.currentPrice}>{formatCurrencyValue(last, chartCurrency, { from: chartCurrency })}</strong>
               <p className={pctChange >= 0 ? styles.pos : styles.neg}>
                 {formatSigned(absChange)} ({formatSigned(pctChange)}%)
               </p>
@@ -1202,7 +1515,7 @@ export default function Dashboard() {
               <p className={styles.assetTicker}>Loading asset data...</p>
             </section>
           ) : (
-            <AssetChart chartData={convertedChartData} timeframe={timeframe} onTimeframeChange={setTimeframe} currency={currency} />
+            <AssetChart chartData={convertedChartData} timeframe={timeframe} onTimeframeChange={setTimeframe} currency={chartCurrency} fxNote={chartFxNote} />
           )}
 
           <section className={styles.statisticsSection} aria-label="Key statistics">
