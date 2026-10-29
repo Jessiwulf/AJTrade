@@ -4,6 +4,7 @@ import AppShell from '../components/AppShell'
 import InfoTip from '../components/InfoTip'
 import SentimentHeatmapGrid from '../components/SentimentHeatmapGrid'
 import { apiFetch } from '../lib/api'
+import { useBroker } from '../lib/broker'
 import { formatQuantity, usdOptions } from '../lib/format'
 import styles from '../styles/Analytics.module.css'
 
@@ -47,7 +48,26 @@ function normalizeSentiment(payload) {
     total_articles: Number(row?.total_articles ?? row?.totalArticles ?? 0),
     date: row?.date || null,
     daily: Array.isArray(row?.daily) ? row.daily : [],
+    // 'alpaca' when the asset gets 30 days of saved Alpaca news; null for Thai stocks, FX, gold...
+    news_coverage: row?.news_coverage || null,
   })).filter((row) => Boolean(row.symbol))
+}
+
+function optionalNumber(value) {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function normalizeWinStats(src) {
+  return {
+    month: src?.month || null,
+    win_rate: optionalNumber(src?.win_rate),
+    closed_trades: Number(src?.closed_trades ?? 0),
+    winning_trades: Number(src?.winning_trades ?? 0),
+    losing_trades: Number(src?.losing_trades ?? 0),
+    realized_pl: Number(src?.realized_pl ?? 0),
+  }
 }
 
 function normalizeMetrics(payload) {
@@ -59,10 +79,13 @@ function normalizeMetrics(payload) {
     total_pl: Number(src?.total_pl ?? src?.totalPl ?? 0),
     unrealized_pl: Number(src?.unrealized_pl ?? src?.unrealizedPl ?? 0),
     realized_pl: Number(src?.realized_pl ?? src?.realizedPl ?? 0),
-    win_rate: Number(src?.win_rate ?? src?.winRate ?? 0),
+    // null = nothing sold yet (shown as "--", not 0%).
+    win_rate: optionalNumber(src?.win_rate ?? src?.winRate),
     total_trades: Number(src?.total_trades ?? src?.totalTrades ?? 0),
     closed_trades: Number(src?.closed_trades ?? src?.closedTrades ?? 0),
     winning_trades: Number(src?.winning_trades ?? src?.winningTrades ?? 0),
+    losing_trades: Number(src?.losing_trades ?? 0),
+    this_month: normalizeWinStats(src?.this_month),
     daily_return: Number(src?.daily_return ?? src?.dailyReturn ?? 0),
   }
 }
@@ -79,6 +102,8 @@ function normalizeHoldings(payload) {
     current_price: Number(row?.current_price ?? row?.currentPrice ?? 0),
     individual_pl: Number(row?.individual_pl ?? row?.individualPl ?? 0),
     return_pct: Number(row?.return_pct ?? row?.returnPct ?? 0),
+    is_open: row?.is_open !== false,
+    ...normalizeWinStats(row),
   }))
 }
 
@@ -92,6 +117,15 @@ function formatPercent(value) {
   const amount = Number(value)
   if (!Number.isFinite(amount)) return '0.00%'
   return `${amount >= 0 ? '+' : ''}${amount.toFixed(2)}%`
+}
+
+function formatWinRate(value) {
+  return value == null ? '--' : `${Number(value).toFixed(1)}%`
+}
+
+function winRateClass(value) {
+  if (value == null) return ''
+  return value >= 50 ? styles.pos : styles.neg
 }
 
 function sentimentLabel(score) {
@@ -110,71 +144,94 @@ function sentimentClass(score) {
   return styles.sentimentNeutral
 }
 
-const TIPS = {
-  totalValue: (
-    <>
-      <span><strong>Total value</strong> is your Alpaca paper account equity right now, as reported by Alpaca.</span>
-      <span><code>cash + Σ (shares × current price)</code> over all positions.</span>
-      <span>The line below it is just the positions part (market value).</span>
-    </>
-  ),
-  cash: (
-    <>
-      <span><strong>Cash</strong> in your Alpaca paper account, straight from Alpaca.</span>
-      <span>It goes down when you (or the bot) buy and up when you sell. It can go negative if margin is used.</span>
-    </>
-  ),
-  totalPl: (
-    <>
-      <span><strong>Total P&amp;L = Realized + Unrealized.</strong></span>
-      <span><strong>Realized</strong>: profit or loss locked in by sells, from your Alpaca fill history, using average cost: <code>(sell price − average buy price) × shares sold</code>.</span>
-      <span><strong>Unrealized</strong>: gain or loss on shares you still hold, from Alpaca: <code>Σ (current price − average entry price) × shares</code>.</span>
-    </>
-  ),
-  winRate: (
-    <>
-      <span><strong>Win rate = winning sells ÷ closed sells × 100.</strong></span>
-      <span>A closed sell is a sell whose buy price is known in your Alpaca history; it &quot;wins&quot; if its realized P&amp;L is above $0.</span>
-      <span>Buys are not counted, because a buy only opens a position.</span>
-    </>
-  ),
-  dailyReturn: (
-    <>
-      <span><strong>Daily return</strong> = <code>(equity now − equity at previous close) ÷ equity at previous close × 100</code>.</span>
-      <span>&quot;Equity at previous close&quot; is Alpaca&apos;s last-trading-day value, so on weekends it compares against Friday&apos;s close. Deposits or withdrawals also move it.</span>
-    </>
-  ),
-  growth: (
-    <>
-      <span><strong>Portfolio growth</strong> is your account equity per trading day, from Alpaca&apos;s portfolio history for the last 30 days.</span>
-      <span>Each point is the value at that day&apos;s close (today&apos;s point is live). Days before the account held any value are left out, and nothing is filled in.</span>
-    </>
-  ),
-  holdings: (
-    <>
-      <span>Every position in your Alpaca paper account.</span>
-      <span><strong>Avg buy price</strong>: Alpaca&apos;s average entry price across your buys.</span>
-      <span><strong>Current price</strong>: Alpaca&apos;s latest price.</span>
-      <span><strong>Individual P&amp;L</strong> = <code>(current − avg buy price) × quantity</code>.</span>
-      <span><strong>Return %</strong> = <code>P&amp;L ÷ (avg buy price × quantity) × 100</code>.</span>
-    </>
-  ),
-  sentiment: (
-    <>
-      <span>News sentiment for each watchlist asset, scored by <strong>FinBERT</strong> from −1 (very negative) to +1 (very positive).</span>
-      <span><strong>Tiles</strong>: average score of the asset&apos;s latest cached news articles. The % is the score × 100. Labels: ≥ +0.5 Very Bullish, ≥ +0.1 Bullish, between −0.1 and +0.1 Neutral, ≥ −0.5 Bearish, lower Very Bearish.</span>
-      <span><strong>Daily heatmap</strong>: each cell is the average score of that day&apos;s articles behind the asset&apos;s latest AI insight (up to 25 articles over 30 days). Hatched = no news that day.</span>
-    </>
-  ),
-  transactions: (
-    <>
-      <span>Filled orders from your Alpaca paper account, with Alpaca&apos;s actual fill price and quantity. Orders that never filled are not shown.</span>
-      <span><strong>Notional</strong> = <code>quantity × price</code>.</span>
-      <span><strong>P&amp;L</strong> (sells only) = <code>(fill price − average buy price) × quantity</code>, using average cost over your fills. &quot;--&quot; for buys, or when the matching buys are not in the history.</span>
-      <span><strong>Source</strong>: Bot = AJTrade trading bot · AJTrade = the Portfolio trade ticket · Alpaca = placed directly on Alpaca.</span>
-    </>
-  ),
+// Explanations for each panel, worded for where the numbers come from (Alpaca or Settrade).
+function buildTips(provider) {
+  const settrade = provider === 'settrade'
+  const broker = settrade ? 'Settrade' : 'Alpaca'
+  const account = settrade ? 'Settrade account' : 'Alpaca paper account'
+  const zero = settrade ? '฿0' : '$0'
+  return {
+    totalValue: (
+      <>
+        <span><strong>Total value</strong> is your {account}&apos;s value right now{settrade ? ': its cash plus the market value of its positions, from Settrade.' : ', as reported by Alpaca.'}</span>
+        <span><code>cash + Σ (shares × current price)</code> over all positions.</span>
+        <span>The line below it is just the positions part (market value).</span>
+      </>
+    ),
+    cash: (
+      <>
+        <span><strong>Cash</strong> in your {account}, straight from {broker}.</span>
+        <span>It goes down when you (or the bot) buy and up when you sell.{settrade ? '' : ' It can go negative if margin is used.'}</span>
+      </>
+    ),
+    totalPl: (
+      <>
+        <span><strong>Total P&amp;L = Realized + Unrealized.</strong></span>
+        <span><strong>Realized</strong>: profit or loss locked in by sells, from {settrade ? 'the Settrade trades AJTrade has recorded (Settrade lists only today’s trades, so this history starts when you connect)' : 'your Alpaca fill history'}, using average cost: <code>(sell price − average buy price) × shares sold</code>.</span>
+        <span><strong>Unrealized</strong>: gain or loss on shares you still hold, from {broker}: <code>Σ (current price − average entry price) × shares</code>.</span>
+      </>
+    ),
+    winRate: (
+      <>
+        <span><strong>Win rate = winning sells ÷ closed sells × 100.</strong></span>
+        <span>A closed sell is a sell whose buy price is known in your recorded {broker} history; it &quot;wins&quot; if its realized P&amp;L is above {zero}. Selling at exactly the buy price counts as closed but not as a win.</span>
+        <span>Buys are not counted, because a buy only opens a position. Many buys followed by one sell make one closed trade.</span>
+        <span>The big number is all time. <strong>This month</strong> counts only the sells closed in the current calendar month (UTC).</span>
+        <span>&quot;--&quot; means nothing has been sold yet.</span>
+      </>
+    ),
+    dailyReturn: (
+      <>
+        <span><strong>Daily return</strong> = <code>(equity now − equity at previous close) ÷ equity at previous close × 100</code>.</span>
+        {settrade ? (
+          <span>&quot;Equity at previous close&quot; is the account value AJTrade recorded on the last earlier day it loaded your Settrade account (Settrade has no account-history feed). Deposits or withdrawals also move it.</span>
+        ) : (
+          <span>&quot;Equity at previous close&quot; is Alpaca&apos;s last-trading-day value, so on weekends it compares against Friday&apos;s close. Deposits or withdrawals also move it.</span>
+        )}
+      </>
+    ),
+    growth: (
+      <>
+        {settrade ? (
+          <span><strong>Portfolio growth</strong> is your Settrade account value per day, from the daily snapshots AJTrade saves whenever it loads your account. It builds up from the day you connect; nothing is filled in.</span>
+        ) : (
+          <span><strong>Portfolio growth</strong> is your account equity per trading day, from Alpaca&apos;s portfolio history for the last 30 days.</span>
+        )}
+        <span>Each point is the latest value of that day (today&apos;s point is live). Days without data are left out.</span>
+      </>
+    ),
+    holdings: (
+      <>
+        <span>Every position in your {account}.</span>
+        <span><strong>Avg buy price</strong>: {broker}&apos;s average {settrade ? 'cost' : 'entry price'} across your buys.</span>
+        <span><strong>Current price</strong>: {broker}&apos;s latest price.</span>
+        <span><strong>Unrealized P&amp;L</strong>: gain or loss on what you still hold, if you sold it now: <code>(current − avg buy price) × quantity</code>. It changes with the price.</span>
+        <span><strong>Return %</strong> = <code>Unrealized P&amp;L ÷ (avg buy price × quantity) × 100</code>.</span>
+        <span><strong>Realized P&amp;L</strong>: profit or loss already locked in by your sells of this asset (all time), the same amounts as the P&amp;L column of Transaction History. So the two P&amp;L columns differ: after a partial sell, Realized is what that sell made or lost, Unrealized is what the rest is doing now.</span>
+        <span><strong>Win rate</strong>: winning sells ÷ closed sells of this asset. &quot;--&quot; = not sold yet. Assets you have fully sold are listed at the bottom as &quot;Closed&quot;.</span>
+      </>
+    ),
+    sentiment: (
+      <>
+        <span>News sentiment for each {settrade ? 'Thai SET' : 'US / crypto'} watchlist asset, scored by <strong>FinBERT</strong> from −1 (very negative) to +1 (very positive).</span>
+        <span><strong>Tiles</strong>: average score of the asset&apos;s latest cached news articles. The % is the score × 100. Labels: ≥ +0.5 Very Bullish, ≥ +0.1 Bullish, between −0.1 and +0.1 Neutral, ≥ −0.5 Bearish, lower Very Bearish.</span>
+        <span><strong>Daily heatmap</strong>: each cell is the average score of that day&apos;s articles. US stocks, ETFs and crypto get up to 10 Benzinga articles a day from <strong>Alpaca News</strong>, saved for the last 30 days, so past days fill in even if the app wasn&apos;t running. The articles behind the asset&apos;s latest AI insight are added on top. Days are UTC. Hatched = no news that day.</span>
+      </>
+    ),
+    transactions: (
+      <>
+        <span>Filled orders from your {account}, with {broker}&apos;s actual fill price and quantity. Orders that never filled are not shown.{settrade ? ' Settrade lists only today’s trades, so earlier days appear once AJTrade has recorded them.' : ''}</span>
+        <span><strong>Notional</strong> = <code>quantity × price</code>.</span>
+        <span><strong>Realized P&amp;L</strong> (sells only) = <code>(fill price − average buy price) × quantity</code>, using average cost over your fills. &quot;--&quot; for buys, or when the matching buys are not in the history. This is locked-in profit or loss, so it differs from the Unrealized P&amp;L of what you still hold.</span>
+        <span><strong>Source</strong>: Bot = AJTrade trading bot · AJTrade = the Portfolio trade ticket · {broker} = placed directly at {broker}.</span>
+      </>
+    ),
+  }
 }
+
+// Set by AnalyticsPage on each render for the active provider.
+let TIPS = buildTips('alpaca')
+let ACCOUNT_NAME = 'Alpaca paper account'
 
 function PanelTitle({ children, tip, align }) {
   return (
@@ -188,9 +245,15 @@ function PanelTitle({ children, tip, align }) {
 function MetricsRow({ metrics }) {
   const cards = [
     { label: 'Total Value', tip: TIPS.totalValue, value: formatCurrency(metrics?.total_value), sub: `${formatCurrency(metrics?.positions_value)} in positions` },
-    { label: 'Cash Balance', tip: TIPS.cash, value: formatCurrency(metrics?.cash_balance), sub: 'Alpaca paper account cash' },
+    { label: 'Cash Balance', tip: TIPS.cash, value: formatCurrency(metrics?.cash_balance), sub: `${ACCOUNT_NAME} cash` },
     { label: 'Total P&L', tip: TIPS.totalPl, value: formatCurrency(metrics?.total_pl), sub: `Realized ${formatCurrency(metrics?.realized_pl)} · Unrealized ${formatCurrency(metrics?.unrealized_pl)}`, cls: Number(metrics?.total_pl) >= 0 ? styles.pos : styles.neg },
-    { label: 'Win Rate', tip: TIPS.winRate, align: 'end', value: `${Number(metrics?.win_rate || 0).toFixed(1)}%`, sub: `${metrics?.winning_trades || 0} / ${metrics?.closed_trades || 0} closed trades` },
+    {
+      label: 'Win Rate',
+      tip: TIPS.winRate,
+      align: 'end',
+      value: formatWinRate(metrics?.win_rate),
+      sub: `${metrics?.winning_trades || 0} / ${metrics?.closed_trades || 0} closed trades · This month: ${formatWinRate(metrics?.this_month?.win_rate)}`,
+    },
     { label: 'Daily Return', tip: TIPS.dailyReturn, align: 'end', value: formatPercent(metrics?.daily_return), sub: "Since the previous trading day's close", cls: Number(metrics?.daily_return) >= 0 ? styles.pos : styles.neg },
   ]
 
@@ -273,7 +336,7 @@ function PortfolioGrowthChart({ history }) {
             </AreaChart>
           </ResponsiveContainer>
         ) : (
-          <p className={styles.empty}>No account history from Alpaca yet. It builds up one point per trading day.</p>
+          <p className={styles.empty}>No account history yet. It builds up one point per trading day.</p>
         )}
       </div>
     </section>
@@ -315,30 +378,44 @@ function HoldingsPerformanceTable({ rows }) {
               <th>Quantity</th>
               <th>Avg Buy Price</th>
               <th>Current Price</th>
-              <th>Individual P&L ($)</th>
+              <th>Unrealized P&L</th>
               <th>Return (%)</th>
+              <th>Realized P&L</th>
+              <th>Win Rate</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
-              <tr key={row.asset_symbol}>
-                <td><strong>{row.asset_symbol}</strong></td>
-                <td>{formatQuantity(row.quantity)}</td>
-                <td>{formatCurrency(row.avg_buy_price)}</td>
-                <td>{formatCurrency(row.current_price)}</td>
-                <td className={Number(row.individual_pl) >= 0 ? styles.pos : styles.neg}>{formatCurrency(row.individual_pl)}</td>
-                <td className={Number(row.return_pct) >= 0 ? styles.pos : styles.neg}>{formatPercent(Number(row.return_pct))}</td>
+              <tr key={row.asset_symbol} className={row.is_open ? '' : styles.closedRow}>
+                <td>
+                  <strong>{row.asset_symbol}</strong>
+                  {row.is_open ? null : <span className={styles.closedTag}>Closed</span>}
+                </td>
+                <td>{row.is_open ? formatQuantity(row.quantity) : '--'}</td>
+                <td>{row.is_open ? formatCurrency(row.avg_buy_price) : '--'}</td>
+                <td>{row.is_open ? formatCurrency(row.current_price) : '--'}</td>
+                <td className={row.is_open ? (Number(row.individual_pl) >= 0 ? styles.pos : styles.neg) : ''}>{row.is_open ? formatCurrency(row.individual_pl) : '--'}</td>
+                <td className={row.is_open ? (Number(row.return_pct) >= 0 ? styles.pos : styles.neg) : ''}>{row.is_open ? formatPercent(Number(row.return_pct)) : '--'}</td>
+                <td className={row.closed_trades ? (row.realized_pl >= 0 ? styles.pos : styles.neg) : ''}>
+                  {row.closed_trades ? formatCurrency(row.realized_pl) : '--'}
+                </td>
+                <td>
+                  <span className={styles.winCell}>
+                    <strong className={winRateClass(row.win_rate)}>{formatWinRate(row.win_rate)}</strong>
+                    <small>{row.closed_trades ? `${row.winning_trades}/${row.closed_trades} won` : 'Not sold yet'}</small>
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      {!rows.length ? <p className={styles.empty}>No positions in your Alpaca paper account.</p> : null}
+      {!rows.length ? <p className={styles.empty}>No positions in your {ACCOUNT_NAME}.</p> : null}
     </section>
   )
 }
 
-const SOURCE_LABELS = { bot: 'Bot', manual: 'AJTrade', alpaca: 'Alpaca' }
+const SOURCE_LABELS = { bot: 'Bot', manual: 'AJTrade', alpaca: 'Alpaca', settrade: 'Settrade' }
 
 function TransactionHistory({ transactions }) {
   const [filterSymbol, setFilterSymbol] = useState('')
@@ -364,7 +441,7 @@ function TransactionHistory({ transactions }) {
               <th>Qty</th>
               <th>Price</th>
               <th>Notional</th>
-              <th>P&L</th>
+              <th>Realized P&L</th>
               <th>Source</th>
             </tr>
           </thead>
@@ -389,6 +466,10 @@ function TransactionHistory({ transactions }) {
 }
 
 export default function AnalyticsPage() {
+  // Every panel shows the member's active broker only (Alpaca or Settrade), never both.
+  const { provider, loaded: brokerLoaded } = useBroker()
+  TIPS = buildTips(provider)
+  ACCOUNT_NAME = provider === 'settrade' ? 'Settrade account' : 'Alpaca paper account'
   const [metrics, setMetrics] = useState(null)
   const [history, setHistory] = useState([])
   const [sentiment, setSentiment] = useState([])
@@ -401,13 +482,13 @@ export default function AnalyticsPage() {
     setLoading(true)
     setError('')
     try {
-      // Pull the latest cash, positions and filled orders from Alpaca first so every panel is current.
+      // Pull the latest cash, positions and filled orders from the broker first so every panel is current.
       try {
         await apiFetch('/api/portfolio/sync-paper', { method: 'POST' })
       } catch {
-        // Not connected or Alpaca unreachable: the Alpaca-backed panels below report it.
+        // Not connected or the broker is unreachable: the broker-backed panels below report it.
       }
-      // Each panel loads on its own, so one failing (e.g. Alpaca not connected) does not blank the page.
+      // Each panel loads on its own, so one failing (e.g. broker not connected) does not blank the page.
       const [metricsRes, historyRes, sentimentRes, transactionRes, holdingsRes] = await Promise.allSettled([
         apiFetch('/api/analytics/portfolio/metrics'),
         apiFetch('/api/analytics/portfolio/history?days=30'),
@@ -428,8 +509,8 @@ export default function AnalyticsPage() {
   }, [])
 
   useEffect(() => {
-    loadData()
-  }, [loadData])
+    if (brokerLoaded) loadData()
+  }, [brokerLoaded, provider, loadData])
 
   return (
     <AppShell title="Analytics" subtitle="Portfolio performance and risk monitoring">

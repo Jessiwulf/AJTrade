@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool
 import httpx
 import logging
 import os
+import re
 import threading
 import time
 
@@ -23,6 +24,25 @@ _RANGE_MAP = {
 
 def _normalize_symbol(symbol: str) -> str:
     return (symbol or '').strip().upper()
+
+
+# Exchanges and sites like stockanalysis.com write share classes and preferreds with a dot
+# (BRK.B, ALL.PRB); Yahoo Finance uses a dash (BRK-B, ALL-PB).
+_SHARE_CLASS_RE = re.compile(r'^([A-Z0-9]+)[.\-/ ]([A-Z])$')
+_PREFERRED_RE = re.compile(r'^([A-Z0-9]+)[.\-/ ]PR[.\-]?([A-Z])$')
+
+
+def yahoo_symbol_candidates(symbol: str) -> List[str]:
+    """Symbols to try on Yahoo for user input, most literal first (so VOD.L / PTT.BK stay as typed)."""
+    normalized = _normalize_symbol(symbol)
+    candidates = [normalized] if normalized else []
+    for pattern, template in ((_SHARE_CLASS_RE, '{}-{}'), (_PREFERRED_RE, '{}-P{}')):
+        match = pattern.match(normalized)
+        if match:
+            converted = template.format(*match.groups())
+            if converted not in candidates:
+                candidates.append(converted)
+    return candidates
 
 
 def _normalize_range(value: str) -> str:
@@ -819,6 +839,73 @@ async def get_fx_history(symbols: str = Query(default='THB'), range: str = Query
     if len(currencies) > 5:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Too many currencies (max 5)')
     return await run_in_threadpool(_fetch_fx_history, currencies, _normalize_range(range))
+
+
+_SEARCH_TYPES = {'EQUITY': 'Stock', 'ETF': 'ETF', 'CURRENCY': 'Currency', 'CRYPTOCURRENCY': 'Crypto'}
+_SEARCH_TTL_S = 10 * 60
+_search_cache: dict = {}
+
+
+def _yahoo_search(query: str) -> List[dict]:
+    with httpx.Client(timeout=10.0, headers=_YAHOO_HEADERS, follow_redirects=True) as client:
+        response = client.get(
+            'https://query2.finance.yahoo.com/v1/finance/search',
+            params={'q': query, 'quotesCount': 12, 'newsCount': 0, 'listsCount': 0, 'enableFuzzyQuery': 'false'},
+        )
+        response.raise_for_status()
+        quotes = (response.json() or {}).get('quotes') or []
+    results = []
+    for quote in quotes:
+        kind = _SEARCH_TYPES.get(str(quote.get('quoteType') or '').upper())
+        symbol = str(quote.get('symbol') or '').upper()
+        if not kind or not symbol:
+            continue  # options, futures, mutual funds and indices can't be watched or traded here
+        results.append({
+            'symbol': symbol,
+            'name': quote.get('longname') or quote.get('shortname') or symbol,
+            'exchange': quote.get('exchDisp') or quote.get('exchange'),
+            'type': kind,
+        })
+    return results
+
+
+def _search_symbols(query: str) -> List[dict]:
+    key = query.lower()
+    now = time.monotonic()
+    cached = _search_cache.get(key)
+    if cached and now < cached[0]:
+        return cached[1]
+
+    results: List[dict] = []
+    seen = set()
+    terms = [query]
+    if ' ' not in query:
+        # Yahoo's search doesn't understand "BRK.B"; search the dash form (BRK-B) first when there is one.
+        terms = list(reversed(yahoo_symbol_candidates(query)))
+    for term in terms:
+        for item in _yahoo_search(term):
+            if item['symbol'] not in seen:
+                seen.add(item['symbol'])
+                results.append(item)
+    results = results[:10]
+
+    if len(_search_cache) > 500:
+        _search_cache.clear()
+    _search_cache[key] = (now + _SEARCH_TTL_S, results)
+    return results
+
+
+@router.get('/search')
+async def search_symbols(q: str = Query(..., min_length=1, max_length=64)):
+    """Ticker/company search for the watchlist, e.g. "berkshire" -> BRK-B, "BRK.B" -> BRK-B."""
+    query = q.strip()
+    if not query:
+        return {'query': q, 'results': []}
+    try:
+        return {'query': query, 'results': await run_in_threadpool(_search_symbols, query)}
+    except Exception as exc:
+        logger.warning('symbol_search_failed q=%s error=%s', query, exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Symbol search is temporarily unavailable')
 
 
 @router.get('/quotes')

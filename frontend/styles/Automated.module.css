@@ -7,6 +7,7 @@
 
 .mainGrid {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -76,96 +77,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.infoTip {
-  position: relative;
-  display: inline-flex;
-}
-
-.infoBtn {
-  width: 18px;
-  height: 18px;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 999px;
-  border: 1px solid var(--aj-accent-border-strong);
-  background: var(--aj-accent-soft);
-  color: var(--aj-indigo);
-  font-size: 11px;
-  font-weight: 900;
-  font-style: italic;
-  font-family: Georgia, serif;
-  line-height: 1;
-  cursor: help;
-  transition: background 0.2s, transform 0.2s;
-}
-
-.infoTip:hover .infoBtn,
-.infoBtn:focus-visible {
-  background: var(--aj-cta-gradient);
-  transform: scale(1.08);
-}
-
-.tooltip {
-  position: absolute;
-  z-index: 20;
-  top: calc(100% + 10px);
-  left: -12px;
-  width: 300px;
-  max-width: calc(100vw - 48px);
-  display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border-radius: var(--aj-radius-sm);
-  background: var(--aj-bg);
-  border: 1px solid var(--aj-border);
-  box-shadow: var(--aj-shadow-md);
-  color: var(--aj-text);
-  font-size: 13px;
-  line-height: 1.5;
-  text-transform: none;
-  letter-spacing: normal;
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(-4px);
-  pointer-events: none;
-  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
-}
-
-.tooltip::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: 16px;
-  width: 10px;
-  height: 10px;
-  background: var(--aj-bg);
-  border-left: 1px solid var(--aj-border);
-  border-top: 1px solid var(--aj-border);
-  transform: rotate(45deg);
-}
-
-.infoTip:hover .tooltip,
-.infoTip:focus-within .tooltip {
-  opacity: 1;
-  visibility: visible;
-  transform: none;
-  /* Lets the pointer move into the tooltip (and scroll it) without it closing. */
-  pointer-events: auto;
-}
-
-/* Long tooltips (strategy list): wider, and capped to the window so they scroll instead of overflowing. */
-.tooltipWide {
-  width: 440px;
-  max-height: min(70vh, 520px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-/* The arrow sits outside the box and would be clipped by the scroll container. */
-.tooltipWide::before {
-  display: none;
 }
 
 .tooltipRules {
@@ -877,6 +788,12 @@
   color: var(--aj-text-muted);
 }
 
+/* On narrow phones the preview table scrolls inside its panel instead of being cut off. */
+.previewTable {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .previewTable summary {
   cursor: pointer;
   font-size: 12px;
@@ -891,7 +808,7 @@
 
 @media (max-width: 720px) {
   .exitTiles {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .collapseMeta {
@@ -1128,6 +1045,14 @@
 .tableWrap {
   margin-top: 10px;
   overflow-x: auto;
+  /* Scroll shadows: a soft edge appears only while more columns are hidden on that side. The cover
+     layers scroll with the content (local), the shadows stay at the edges (scroll). */
+  background:
+    linear-gradient(to right, var(--aj-bg) 30%, rgba(255, 255, 255, 0)) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--aj-bg) 30%, rgba(255, 255, 255, 0)) right center / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(15, 23, 42, 0.16), rgba(15, 23, 42, 0)) left center / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(15, 23, 42, 0.16), rgba(15, 23, 42, 0)) right center / 12px 100% no-repeat scroll;
+  -webkit-overflow-scrolling: touch;
 }
 
 .table {
@@ -1209,11 +1134,11 @@
 
 @media (max-width: 1100px) {
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .fieldGrid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .actionsRow {

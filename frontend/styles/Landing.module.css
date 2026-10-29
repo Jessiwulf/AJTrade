@@ -1101,7 +1101,7 @@
   .heroGrid,
   .overviewGrid,
   .featureRow {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 36px;
   }
 
@@ -1134,7 +1134,7 @@
   }
 
   .stackGrid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .featureList {
@@ -1178,11 +1178,11 @@
   }
 
   .compare {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .stats {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .stat + .stat {

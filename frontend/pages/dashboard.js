@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 import AppShell from '../components/AppShell'
 import { apiFetch } from '../lib/api'
+import { symbolProvider, useBroker } from '../lib/broker'
 import styles from '../styles/Dashboard.module.css'
 
 const TIMEFRAMES = ['1D', '5D', '1M', '6M', 'YTD', '1Y', '5Y', 'MAX']
@@ -372,7 +373,7 @@ function getAssetPrice(detail) {
   const fromQuote = toFiniteNumber(quote?.price)
   if (Number.isFinite(fromQuote)) return fromQuote
   const points = getDetailPoints(detail)
-  const closes = points.map((point) => Number(point?.close)).filter((value) => Number.isFinite(value))
+  const closes = points.map((point) => toFiniteNumber(point?.close)).filter((value) => value !== null)
   return closes.length ? closes[closes.length - 1] : null
 }
 
@@ -440,7 +441,8 @@ function normalizeChartData(detail, timeframe) {
   if (!points.length) return []
 
   return points
-    .filter((point) => Number.isFinite(Number(point?.close)))
+    // Bars without trades come back with a null close; Number(null) would plot them at 0.
+    .filter((point) => toFiniteNumber(point?.close) !== null)
     .map((point) => ({
       time: point.t,
       fullLabel: formatTooltipTime(point.t, timeframe),
@@ -452,8 +454,8 @@ function getSparklineValues(detail) {
   const points = getDetailPoints(detail)
   if (!points.length) return []
   return points
-    .map((point) => Number(point?.close))
-    .filter((value) => Number.isFinite(value))
+    .map((point) => toFiniteNumber(point?.close))
+    .filter((value) => value !== null)
 }
 
 // Compact Y-axis formatter (2,135,452 → 2.14M, 57,860 → 57.9K)
@@ -515,8 +517,8 @@ function PortfolioOverviewCard({ summary, currency, onCurrencyChange, fx }) {
       </div>
       {fxNote ? <p className={`${styles.fxNote} ${fxNote.warn ? styles.fxNoteWarn : ''}`}>{fxNote.text}</p> : null}
       <div className={styles.portfolioMetrics}>
-        <p><span>Total Balance</span><strong>{formatCurrencyValue(summary.totalBalance, currency, { rates: fx?.rates })}</strong></p>
-        <p><span>Total Value</span><strong>{formatCurrencyValue(summary.totalValue, currency, { rates: fx?.rates })}</strong></p>
+        <p><span>Total Balance</span><strong>{formatCurrencyValue(summary.totalBalance, currency, { from: summary.currency, rates: fx?.rates })}</strong></p>
+        <p><span>Total Value</span><strong>{formatCurrencyValue(summary.totalValue, currency, { from: summary.currency, rates: fx?.rates })}</strong></p>
         <p><span>Performance (%)</span><strong className={summary.performancePct >= 0 ? styles.pos : styles.neg}>{formatSigned(summary.performancePct)}%</strong></p>
       </div>
       <div className={styles.allocationArea}>
@@ -1023,6 +1025,8 @@ function AIAssistantSidebar({ selectedAsset }) {
 }
 
 export default function Dashboard() {
+  // The dashboard shows the active broker only: its watchlist assets and its account.
+  const { provider, meta: providerMeta, loaded: brokerLoaded } = useBroker()
   const [selectedTicker, setSelectedTicker] = useState('')
   const [timeframe, setTimeframe] = useState('1D')
   const [currency, setCurrency] = useState('USD')
@@ -1072,15 +1076,19 @@ export default function Dashboard() {
     (url) => apiFetch(url),
     swrOptions,
   )
-  const watchlistItems = useMemo(() => normalizeWatchlist(watchlistData), [watchlistData])
+  const watchlistItems = useMemo(
+    () => normalizeWatchlist(watchlistData).filter((item) => symbolProvider(item.symbol, item.provider) === provider),
+    [watchlistData, provider],
+  )
 
   const { data: portfolioData } = useSWR(
-    'dashboard-portfolio-state',
+    // Keyed by provider so switching broker never shows the other account's cached numbers.
+    brokerLoaded ? `dashboard-portfolio-state:${provider}` : null,
     async () => {
-      // The Alpaca paper account is the source of truth; the local copy is only a fallback when Alpaca
-      // cannot be reached (it is refreshed from Alpaca on every sync).
+      // The broker account (Alpaca paper or Settrade) is the source of truth; the local copy is only a
+      // fallback when the broker cannot be reached (it is refreshed from the broker on every sync).
       try {
-        const paperPortfolio = await apiFetch('/api/portfolio/paper-account')
+        const paperPortfolio = await apiFetch(`/api/portfolio/paper-account?provider=${provider}`)
         return {
           source: 'paper',
           cashBalance: toFiniteNumber(paperPortfolio?.cash, 0),
@@ -1095,7 +1103,7 @@ export default function Dashboard() {
         }
       } catch {
         try {
-          const localPortfolio = await apiFetch('/api/portfolio')
+          const localPortfolio = await apiFetch(`/api/portfolio?provider=${provider}`)
           return {
             source: 'local',
             cashBalance: toFiniteNumber(localPortfolio?.cash_balance, 0),
@@ -1354,6 +1362,7 @@ export default function Dashboard() {
   const portfolioOverview = useMemo(() => {
     if (!portfolioState) {
       return {
+        currency: providerMeta.currency,
         totalBalance: 0,
         totalValue: 0,
         performancePct: 0,
@@ -1395,26 +1404,27 @@ export default function Dashboard() {
       .sort((a, b) => b.value - a.value)
 
     return {
+      currency: providerMeta.currency,
       totalBalance: cashBalance,
       totalValue,
       performancePct,
       allocation,
     }
-  }, [portfolioState, portfolioQuotes, effectiveSnapshots])
+  }, [portfolioState, portfolioQuotes, effectiveSnapshots, providerMeta.currency])
 
   const statRows = useMemo(() => {
     const detailPoints = getDetailPoints(selectedDetail)
     const detailQuote = selectedQuote || getDetailQuote(selectedDetail) || {}
     const statisticsPrice = keyStatistics?.latest_price ?? detailQuote?.price ?? selectedQuote?.price
     const resolvedPreviousClose = keyStatistics?.previous_close ?? detailQuote?.previous_close ?? detailQuote?.previousClose
-    const chartOpen = detailPoints.find((point) => Number.isFinite(Number(point?.open)))?.open ?? detailPoints.find((point) => Number.isFinite(Number(point?.close)))?.close
+    const chartOpen = detailPoints.find((point) => toFiniteNumber(point?.open) !== null)?.open ?? detailPoints.find((point) => toFiniteNumber(point?.close) !== null)?.close
     const chartDayLow = detailPoints.reduce((lowest, point) => {
-      const low = Number(point?.low)
-      return Number.isFinite(low) ? (lowest === null ? low : Math.min(lowest, low)) : lowest
+      const low = toFiniteNumber(point?.low)
+      return low !== null ? (lowest === null ? low : Math.min(lowest, low)) : lowest
     }, null)
     const chartDayHigh = detailPoints.reduce((highest, point) => {
-      const high = Number(point?.high)
-      return Number.isFinite(high) ? (highest === null ? high : Math.max(highest, high)) : highest
+      const high = toFiniteNumber(point?.high)
+      return high !== null ? (highest === null ? high : Math.max(highest, high)) : highest
     }, null)
     const resolvedOpen = keyStatistics?.open ?? detailQuote?.open ?? chartOpen
     const resolvedDayLow = keyStatistics?.day_low ?? detailQuote?.day_low ?? detailQuote?.dayLow ?? chartDayLow

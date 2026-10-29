@@ -3,6 +3,13 @@ import Link from 'next/link'
 import { apiFetch, BACKEND_URL, getAccessToken, setAccessToken } from '../lib/api'
 import { useSession } from '../components/AppShell'
 
+// Developer panel with inline styles: keep its controls and raw JSON inside the screen on phones.
+const ML_PAGE_RESPONSIVE_CSS = `
+  .ml-page input, .ml-page select, .ml-page textarea { max-width: 100%; box-sizing: border-box; }
+  .ml-page pre { max-width: 100%; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ml-page button { margin-top: 4px; }
+`
+
 function Section({ title, children }) {
   return (
     <section style={{ border: '1px solid #ddd', padding: 16, marginTop: 16 }}>
@@ -250,13 +257,14 @@ export default function MLPanel() {
 
   if (isGuest) {
     return (
-      <main style={{ padding: 24, fontFamily: 'Arial' }}>
+      <main className="ml-page" style={{ padding: 'clamp(14px, 4vw, 24px)', fontFamily: 'Arial' }}>
+        <style jsx global>{ML_PAGE_RESPONSIVE_CSS}</style>
         <h2>Guest Market Analysis</h2>
         <p>
           Public visitors can query the LLM for the five featured assets only: BTC, ETH, AAPL, MSFT, and TSLA.
         </p>
         <Section title="Guest LLM">
-          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 8, maxWidth: 520 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 160px) minmax(0, 1fr)', gap: 8, maxWidth: 520 }}>
             <label>Asset</label>
             <select value={guestSymbol} onChange={(e) => setGuestSymbol(e.target.value)}>
               {['BTC', 'ETH', 'AAPL', 'MSFT', 'TSLA'].map((asset) => (
@@ -298,7 +306,8 @@ export default function MLPanel() {
   }
 
   return (
-    <main style={{ padding: 24, fontFamily: 'Arial' }}>
+    <main className="ml-page" style={{ padding: 'clamp(14px, 4vw, 24px)', fontFamily: 'Arial' }}>
+        <style jsx global>{ML_PAGE_RESPONSIVE_CSS}</style>
       <h2>ML Panel (Sentiment + LightGBM + Keyword SHAP)</h2>
       <p>
         <Link href="/">Home</Link> | <Link href="/login">Login</Link> |{' '}
@@ -342,7 +351,7 @@ export default function MLPanel() {
       </Section>
 
       <Section title="Controls">
-        <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 8, maxWidth: 520 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 160px) minmax(0, 1fr)', gap: 8, maxWidth: 520 }}>
           <label>Symbol</label>
           <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} />
 
@@ -408,7 +417,7 @@ export default function MLPanel() {
         <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(v2Shap, null, 2)}</pre>
 
         <h4>LLM explanation (uses only SHAP context)</h4>
-        <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 8, maxWidth: 760 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 160px) minmax(0, 1fr)', gap: 8, maxWidth: 760 }}>
           <label>LLM preference</label>
           <select value={v2Preference} onChange={(e) => setV2Preference(e.target.value)} style={{ maxWidth: 240 }}>
             <option value="open-source">open-source</option>

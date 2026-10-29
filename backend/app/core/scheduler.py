@@ -5,9 +5,8 @@ import logging
 import importlib
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-import httpx
 try:
     AsyncIOScheduler = importlib.import_module('apscheduler.schedulers.asyncio').AsyncIOScheduler
 except Exception:  # pragma: no cover - runtime fallback when dependency is missing
@@ -21,7 +20,6 @@ _scheduler: Any = None
 _last_run_at: datetime | None = None
 _refreshed_users_total: int = 0
 _refreshed_users_last_run: int = 0
-_alerted_signal_ids: Set[str] = set()
 
 
 def _env_float(name: str, default: float) -> float:
@@ -39,6 +37,8 @@ NEWS_REFRESH_MINUTES = _env_float('AJTRADE_NEWS_REFRESH_MINUTES', 15.0)
 SIGNAL_REFRESH_MINUTES = _env_float('AJTRADE_SIGNAL_REFRESH_MINUTES', 3.0)
 # The bot acts on the same signal at most this many times (spaced by the bot cooldown).
 BOT_MAX_TRADES_PER_SIGNAL = max(int(_env_float('AJTRADE_BOT_MAX_TRADES_PER_SIGNAL', 1)), 1)
+# How often the notification system checks the bot's execution log for newly filled orders.
+NOTIFY_POLL_SECONDS = max(_env_float('AJTRADE_NOTIFY_POLL_SECONDS', 15.0), 5.0)
 
 
 def _cache_ttl_minutes(refresh_minutes: float) -> float:
@@ -62,58 +62,6 @@ def get_scheduler_status() -> Dict[str, Any]:
         'refreshed_users_total': int(_refreshed_users_total),
         'refreshed_users_last_run': int(_refreshed_users_last_run),
     }
-
-
-async def _send_alert_webhook(owner: str, symbol: str, signal: str, payload: Dict[str, Any]) -> None:
-    """Posts BUY/SELL threshold alerts to the Discord/Email webhooks when configured (AJTRADE_DISCORD_WEBHOOK_URL /
-    AJTRADE_EMAIL_WEBHOOK_URL) and records the alert."""
-    discord_url = (os.environ.get('AJTRADE_DISCORD_WEBHOOK_URL') or '').strip()
-    email_url = (os.environ.get('AJTRADE_EMAIL_WEBHOOK_URL') or '').strip()
-
-    message = {
-        'owner': owner,
-        'symbol': symbol,
-        'signal': signal,
-        'payload': payload,
-        'source': 'apscheduler-watchlist-refresh',
-    }
-
-    delivery_status = 'triggered'
-    logger.info('alert_triggered payload=%s', message)
-
-    async with httpx.AsyncClient(timeout=8.0) as client:
-        if discord_url:
-            try:
-                await client.post(discord_url, json={'content': f"[{signal}] {symbol} for {owner}", 'meta': payload})
-                delivery_status = 'sent'
-            except Exception as exc:
-                delivery_status = 'failed'
-                logger.warning('discord_webhook_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
-        if email_url:
-            try:
-                await client.post(email_url, json=message)
-                delivery_status = 'sent'
-            except Exception as exc:
-                delivery_status = 'failed'
-                logger.warning('email_webhook_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
-
-    alert_message = f"{signal} threshold met for {symbol}; confidence={payload.get('confidence')}"
-    try:
-        db = get_database()
-        await db.execute(
-            query=(
-                "INSERT INTO alert_events (owner_id, alert_type, message, status, created_at) "
-                "VALUES (:owner_id, :alert_type, :message, :status, now())"
-            ),
-            values={
-                'owner_id': owner,
-                'alert_type': str(signal or 'ALERT').upper(),
-                'message': alert_message,
-                'status': delivery_status,
-            },
-        )
-    except Exception as exc:
-        logger.warning('alert_event_insert_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
 
 
 def _build_trade_signal_data(
@@ -233,18 +181,6 @@ async def _load_signal_attempts(
         if isinstance(metadata, dict) and metadata.get('signal_id') == signal_id:
             attempts += 1
     return attempts, last_attempt_at
-
-
-async def _send_signal_alert(owner: str, symbol: str, signal: str, payload: Dict[str, Any]) -> None:
-    """Alert callback for strong AI signals: notifies once per signal, independent of the bot."""
-    signal_id = f"{symbol}:{signal}:{payload.get('generated_at')}"
-    if signal_id in _alerted_signal_ids:
-        return
-    _alerted_signal_ids.add(signal_id)
-    try:
-        await _send_alert_webhook(owner, symbol, signal, payload)
-    except Exception as exc:
-        logger.warning('alert_webhook_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
 
 
 async def _run_dca_for_asset(owner: str, symbol: str, rule: Dict[str, Any], insight: Dict[str, Any]) -> None:
@@ -386,6 +322,29 @@ async def _run_bot_for_insight(owner: str, symbol: str, insight: Dict[str, Any])
         logger.warning('bot_trade_execution_failed owner=%s symbol=%s side=%s error=%s', owner, symbol, side, exc)
 
 
+async def _on_insight(owner: str, symbol: str, insight: Dict[str, Any]) -> None:
+    """Every fresh AI insight feeds the notification system's market-risk checks and the bot."""
+    try:
+        from app.core.notifier import evaluate_market_events
+
+        await evaluate_market_events(owner, symbol, insight)
+    except Exception as exc:
+        logger.warning('notify_market_hook_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
+    await _run_bot_for_insight(owner, symbol, insight)
+
+
+async def notify_trade_executions_job() -> None:
+    """Notification system: announces bot orders that filled since the last check."""
+    try:
+        from app.core.notifier import process_trade_executions
+
+        claimed = await process_trade_executions()
+        if claimed:
+            logger.info('notify_trade_executions claimed=%s', claimed)
+    except Exception as exc:
+        logger.warning('notify_trade_executions_failed error=%s', exc)
+
+
 async def _run_position_exits(price_cache: Dict[str, Optional[float]]) -> None:
     """Settles bot orders still open on Alpaca, then checks every open bot position against its
     stop-loss / trailing stop / take-profit."""
@@ -469,8 +428,7 @@ async def refresh_watchlists_job() -> None:
                 owner,
                 news_ttl_minutes=_cache_ttl_minutes(NEWS_REFRESH_MINUTES),
                 insights_ttl_minutes=_cache_ttl_minutes(SIGNAL_REFRESH_MINUTES),
-                alert_callback=_send_signal_alert,
-                insight_callback=_run_bot_for_insight,
+                insight_callback=_on_insight,
             )
             refreshed_count += 1
             logger.info('scheduler_watchlist_refresh_success owner=%s summary=%s', owner, summary)
@@ -479,6 +437,20 @@ async def refresh_watchlists_job() -> None:
 
     _refreshed_users_last_run = refreshed_count
     _refreshed_users_total += refreshed_count
+
+    await notify_trade_executions_job()
+
+
+async def news_history_job() -> None:
+    """Fills the Analytics heatmap's 30 days of news sentiment from Alpaca news (see app.core.news_history)."""
+    try:
+        from app.core.news_history import backfill_tick
+
+        summary = await backfill_tick()
+        if summary.get('days') or summary.get('failed') or summary.get('stopped') == 'rate limited':
+            logger.info('news_history_tick summary=%s', summary)
+    except Exception as exc:
+        logger.warning('news_history_job_failed error=%s', exc)
 
 
 def start_scheduler() -> None:
@@ -501,15 +473,39 @@ def start_scheduler() -> None:
             coalesce=True,
             max_instances=1,
         )
+        scheduler.add_job(
+            notify_trade_executions_job,
+            trigger='interval',
+            seconds=int(NOTIFY_POLL_SECONDS),
+            id='notification-trade-monitor',
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        from app.core.news_history import NEWS_HISTORY_ENABLED, NEWS_HISTORY_INTERVAL_SECONDS
+
+        if NEWS_HISTORY_ENABLED:
+            scheduler.add_job(
+                news_history_job,
+                trigger='interval',
+                seconds=NEWS_HISTORY_INTERVAL_SECONDS,
+                id='news-history-backfill',
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+                # First run shortly after startup, so a fresh deploy starts filling the heatmap.
+                next_run_time=_now_utc() + timedelta(seconds=20),
+            )
         scheduler.start()
         _scheduler = scheduler
         logger.info(
             'scheduler_started interval_minutes=%s news_refresh_minutes=%s signal_refresh_minutes=%s '
-            'bot_max_trades_per_signal=%s',
+            'bot_max_trades_per_signal=%s notify_poll_seconds=%s',
             SCHEDULER_INTERVAL_MINUTES,
             NEWS_REFRESH_MINUTES,
             SIGNAL_REFRESH_MINUTES,
             BOT_MAX_TRADES_PER_SIGNAL,
+            NOTIFY_POLL_SECONDS,
         )
     except Exception as exc:
         _scheduler = None

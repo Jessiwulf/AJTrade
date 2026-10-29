@@ -53,6 +53,7 @@
   background: var(--panel-bg);
   display: grid;
   gap: 4px;
+  align-content: start;
 }
 
 .metricCard > p {
@@ -126,6 +127,14 @@
 
 .tableWrap {
   overflow-x: auto;
+  /* Scroll shadows: a soft edge appears only while more columns are hidden on that side. The cover
+     layers scroll with the content (local), the shadows stay at the edges (scroll). */
+  background:
+    linear-gradient(to right, var(--aj-bg) 30%, rgba(255, 255, 255, 0)) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--aj-bg) 30%, rgba(255, 255, 255, 0)) right center / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(15, 23, 42, 0.16), rgba(15, 23, 42, 0)) left center / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(15, 23, 42, 0.16), rgba(15, 23, 42, 0)) right center / 12px 100% no-repeat scroll;
+  -webkit-overflow-scrolling: touch;
 }
 
 .table {
@@ -167,6 +176,17 @@
   margin: 0;
   color: var(--panel-muted);
   font-size: 12px;
+}
+
+.heatNote {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--aj-surface);
+  border: 1px solid var(--aj-border-soft);
+  color: var(--panel-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .pos {
@@ -436,6 +456,34 @@ button.heatCell:hover {
   font-variant-numeric: tabular-nums;
 }
 
+.winCell {
+  display: grid;
+  gap: 2px;
+}
+
+.winCell small {
+  color: var(--panel-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.closedRow td {
+  color: var(--panel-muted);
+}
+
+.closedTag {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: var(--aj-surface);
+  color: var(--panel-muted);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 @media (max-width: 1280px) {
   .metricsGrid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -467,11 +515,11 @@ button.heatCell:hover {
 
 @media (max-width: 640px) {
   .metricsGrid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .heatmapGrid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

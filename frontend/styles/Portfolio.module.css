@@ -277,6 +277,14 @@
 /* Holdings table */
 .tableWrap {
   overflow-x: auto;
+  /* Scroll shadows: a soft edge appears only while more columns are hidden on that side. The cover
+     layers scroll with the content (local), the shadows stay at the edges (scroll). */
+  background:
+    linear-gradient(to right, var(--aj-bg) 30%, rgba(255, 255, 255, 0)) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--aj-bg) 30%, rgba(255, 255, 255, 0)) right center / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(15, 23, 42, 0.16), rgba(15, 23, 42, 0)) left center / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(15, 23, 42, 0.16), rgba(15, 23, 42, 0)) right center / 12px 100% no-repeat scroll;
+  -webkit-overflow-scrolling: touch;
 }
 
 .table {
@@ -835,7 +843,7 @@
 
 @media (max-width: 1100px) {
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .stats {
@@ -845,7 +853,7 @@
 
 @media (max-width: 560px) {
   .stats {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .initRow {

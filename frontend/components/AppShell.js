@@ -3,7 +3,9 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import AJLogo from './AJLogo'
 import { apiFetch, setAccessToken } from '../lib/api'
-import { loadStoredProfile } from '../lib/userProfile'
+import { PROFILE_UPDATED_EVENT, loadStoredProfile } from '../lib/userProfile'
+import { useBroker } from '../lib/broker'
+import { NOT_ADVICE } from '../lib/outlook'
 import styles from './AppShell.module.css'
 
 // --- Inline icon primitives (Heroicons-style stroke icons) ---
@@ -36,6 +38,16 @@ const NAV_ITEMS = [
         <rect x="14" y="3" width="7" height="7" rx="1" />
         <rect x="3" y="14" width="7" height="7" rx="1" />
         <rect x="14" y="14" width="7" height="7" rx="1" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/portfolio',
+    label: 'Portfolio',
+    icon: (
+      <NavIcon>
+        <rect x="2" y="7" width="20" height="14" rx="2" />
+        <path d="M7 7V5a2 2 0 012-2h6a2 2 0 012 2v2" />
       </NavIcon>
     ),
   },
@@ -83,16 +95,6 @@ const NAV_ITEMS = [
     ),
   },
   {
-    href: '/portfolio',
-    label: 'Portfolio',
-    icon: (
-      <NavIcon>
-        <rect x="2" y="7" width="20" height="14" rx="2" />
-        <path d="M7 7V5a2 2 0 012-2h6a2 2 0 012 2v2" />
-      </NavIcon>
-    ),
-  },
-  {
     href: '/analytics',
     label: 'Analytics',
     icon: (
@@ -121,6 +123,16 @@ const NAV_ITEMS = [
       <NavIcon>
         <circle cx="8" cy="12" r="4" />
         <path d="M14 10h8M18 8v4" />
+      </NavIcon>
+    ),
+  },
+  {
+    href: '/notifications',
+    label: 'Notifications',
+    icon: (
+      <NavIcon>
+        <path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+        <path d="M13.73 21a2 2 0 01-3.46 0" />
       </NavIcon>
     ),
   },
@@ -174,6 +186,7 @@ export function useSession() {
 }
 
 export default function AppShell({ title, subtitle, children }) {
+  const { meta: providerMeta } = useBroker()
   const router = useRouter()
   const path = router?.pathname || ''
   const [isAuthed, setIsAuthed] = useState(false)
@@ -182,6 +195,8 @@ export default function AppShell({ title, subtitle, children }) {
   const [authModalOpen, setAuthModalOpen] = useState(false)
   const [authModalSource, setAuthModalSource] = useState('locked feature')
   const [isNavOpen, setIsNavOpen] = useState(true)
+  // Phones/tablets: the nav lives in a slide-in drawer opened from the top bar.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   function getInitials(value) {
     const text = String(value || '').trim()
@@ -275,6 +290,33 @@ export default function AppShell({ title, subtitle, children }) {
     refreshSession()
   }, [])
 
+  useEffect(() => {
+    function onProfileUpdated(event) {
+      setProfile((prev) => ({ ...(prev || {}), ...(event.detail || {}) }))
+    }
+    window.addEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated)
+    return () => window.removeEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated)
+  }, [])
+
+  // Close the drawer when navigating, lock page scroll while it is open, and close it on Escape.
+  useEffect(() => {
+    setMobileNavOpen(false)
+  }, [router?.asPath])
+
+  useEffect(() => {
+    if (!mobileNavOpen) return undefined
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    function onKeyDown(event) {
+      if (event.key === 'Escape') setMobileNavOpen(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.style.overflow = previous
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [mobileNavOpen])
+
   const isActive = (item) => {
     if (item.matchPaths) return item.matchPaths.includes(path)
     return item.href ? path === item.href : false
@@ -286,8 +328,33 @@ export default function AppShell({ title, subtitle, children }) {
         <div className={styles.navTop}>
           <Link href="/" className={styles.brand} aria-label="AJTrade home">
             <AJLogo size={22} />
-            {isNavOpen && <span>AJTrade</span>}
+            <span className={styles.brandText}>AJTrade</span>
           </Link>
+          <button
+            type="button"
+            className={styles.menuButton}
+            onClick={() => setMobileNavOpen(true)}
+            aria-label="Open menu"
+            aria-expanded={mobileNavOpen}
+            aria-controls="app-navigation"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
+          </button>
+        </div>
+
+        <div id="app-navigation" className={`${styles.navPanel} ${mobileNavOpen ? styles.navPanelOpen : ''}`}>
+        <div className={styles.drawerHead}>
+          <Link href="/" className={styles.brand} aria-label="AJTrade home">
+            <AJLogo size={22} />
+            <span className={styles.brandText}>AJTrade</span>
+          </Link>
+          <button type="button" className={styles.menuButton} onClick={() => setMobileNavOpen(false)} aria-label="Close menu">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
         </div>
 
         <nav className={styles.nav} aria-label="Sidebar">
@@ -303,7 +370,7 @@ export default function AppShell({ title, subtitle, children }) {
                   title={item.label}
                 >
                   {item.icon}
-                  {isNavOpen && <span className={styles.navLabel}>{item.label}</span>}
+                  <span className={styles.navLabel}>{item.label}</span>
                 </span>
               )
             }
@@ -316,7 +383,7 @@ export default function AppShell({ title, subtitle, children }) {
                 title={item.label}
               >
                 {item.icon}
-                {isNavOpen && <span className={styles.navLabel}>{item.label}</span>}
+                <span className={styles.navLabel}>{item.label}</span>
               </Link>
             )
           })}
@@ -334,6 +401,10 @@ export default function AppShell({ title, subtitle, children }) {
             {isNavOpen ? '\u2039' : '\u203a'}
           </button>
         </div>
+        </div>
+        {mobileNavOpen ? (
+          <button type="button" className={styles.drawerBackdrop} onClick={() => setMobileNavOpen(false)} aria-label="Close menu" tabIndex={-1} />
+        ) : null}
       </aside>
 
       <SessionContext.Provider value={session}>
@@ -347,6 +418,15 @@ export default function AppShell({ title, subtitle, children }) {
           <div className={styles.actions}>
             {isAuthed ? (
               <>
+                <Link
+                  href="/profile"
+                  className={styles.providerBadge}
+                  title={`Showing ${providerMeta.label} (${providerMeta.market}). Change in Profile & Settings.`}
+                  aria-label={`Trading provider: ${providerMeta.label}. Change in Profile & Settings.`}
+                >
+                  {providerMeta.label}
+                  <span className={styles.providerCurrency}>{providerMeta.currency}</span>
+                </Link>
                 <Link href="/profile" className={styles.profileButton} aria-label="Open profile settings">
                   {profile?.avatar_url ? (
                     <img
@@ -382,6 +462,10 @@ export default function AppShell({ title, subtitle, children }) {
             {children}
           </div>
         </div>
+        <footer className={styles.legalFooter}>
+          {NOT_ADVICE} Trading involves risk, including loss of capital. AJTrade is an academic thesis project.{' '}
+          <Link href="/privacy">Privacy Notice</Link>
+        </footer>
 
         {authModalOpen ? (
           <div className={styles.modalBackdrop} role="presentation" onClick={closeAuthModal}>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import AppShell from '../components/AppShell'
+import InfoTip from '../components/InfoTip'
 import { apiFetch } from '../lib/api'
 import styles from '../styles/AIPerformance.module.css'
 
@@ -75,15 +76,7 @@ function ForecasterMonitor({ data }) {
     <section className={styles.panel}>
       <div className={styles.panelTitleRow}>
         <h3>Forecaster & XAI Monitor</h3>
-        <span className={styles.infoWrap}>
-          <button
-            type="button"
-            className={styles.infoIcon}
-            aria-label="Explain Forecaster and XAI monitor metrics"
-          >
-            ?
-          </button>
-          <div role="tooltip" className={styles.infoTooltip}>
+        <InfoTip label="Forecaster and XAI monitor metrics" wide icon="?">
             <p><strong>How to read this table</strong></p>
             <p><strong>Asset:</strong> Ticker symbol used by the model run.</p>
             <p><strong>Raw Forecast Score:</strong> Model confidence mapped to a scale from -1 to +1. Values above 0 suggest bullish pressure, below 0 suggest bearish pressure.</p>
@@ -91,8 +84,7 @@ function ForecasterMonitor({ data }) {
             <p><strong>Bear Threshold:</strong> Maximum score (negative side) required before the system treats a signal as meaningful downside.</p>
             <p><strong>TreeSHAP Explainability Log:</strong> Top feature impacts from the model. This explains why the score moved and gives context for trust and risk review.</p>
             <p><strong>Why it matters:</strong> Compare Raw Forecast Score against Bull/Bear thresholds first. If the score stays between thresholds, the signal is usually weak and less actionable.</p>
-          </div>
-        </span>
+        </InfoTip>
       </div>
       <div className={styles.tableWrap}>
         <table className={styles.table}>

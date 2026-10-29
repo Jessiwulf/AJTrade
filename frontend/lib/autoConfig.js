@@ -1,6 +1,8 @@
 // Turns an AI insight into a suggested bot setup for that asset. Used by the Insights page (preview +
 // "Automate") and the Automated page (applies it as unsaved changes the user reviews, saves or undoes).
 
+import { outlookLabel } from './outlook'
+
 export const AUTO_CONFIG_KEY = 'ajtrade.autoConfig'
 const MEAN_REVERSION_MOVE_PCT = 3
 const NEWS_MOMENTUM_SENTIMENT = 0.3
@@ -30,23 +32,23 @@ function pickStrategy(insight) {
     const counterMove = (signal === 'BUY' && change <= -MEAN_REVERSION_MOVE_PCT) || (signal === 'SELL' && change >= MEAN_REVERSION_MOVE_PCT)
     const sentimentAgrees = (signal === 'BUY' && sentiment > 0) || (signal === 'SELL' && sentiment < 0)
     if (trendAgrees) {
-      return { strategy: 'Trend Following', reason: `The AI ${signal} agrees with the ${changeText} one-month trend.` }
+      return { strategy: 'Trend Following', reason: `The ${outlookLabel(signal)} AI outlook agrees with the ${changeText} one-month trend.` }
     }
     if (counterMove) {
       return {
         strategy: 'Mean Reversion',
-        reason: `The AI says ${signal} after a ${changeText} move, i.e. it expects the price to swing back.`,
+        reason: `The AI outlook is ${outlookLabel(signal)} after a ${changeText} move, i.e. it expects the price to swing back.`,
       }
     }
     if (sentimentAgrees) {
-      return { strategy: 'AI Momentum + Sentiment', reason: `The AI ${signal} is backed by news sentiment (${sentiment.toFixed(2)}).` }
+      return { strategy: 'AI Momentum + Sentiment', reason: `The ${outlookLabel(signal)} AI outlook is backed by news sentiment (${sentiment.toFixed(2)}).` }
     }
-    return { strategy: 'Trend Following', reason: `The AI says ${signal}, but the trend is flat; the bot waits for the trend to confirm it.` }
+    return { strategy: 'Trend Following', reason: `The AI outlook is ${outlookLabel(signal)}, but the trend is flat; the bot waits for the trend to confirm it.` }
   }
   if (Math.abs(sentiment) >= NEWS_MOMENTUM_SENTIMENT) {
-    return { strategy: 'News Momentum', reason: `No AI trade signal right now, but news sentiment is strong (${sentiment.toFixed(2)}).` }
+    return { strategy: 'News Momentum', reason: `The AI outlook is Neutral right now, but news sentiment is strong (${sentiment.toFixed(2)}).` }
   }
-  return { strategy: 'Trend Following', reason: 'No AI trade signal right now; the bot waits for a signal that the trend confirms.' }
+  return { strategy: 'Trend Following', reason: 'The AI outlook is Neutral right now; the bot waits for an outlook that the trend confirms.' }
 }
 
 // Exits scaled to how much the asset normally moves in a day (volatility = std. dev. of daily returns).

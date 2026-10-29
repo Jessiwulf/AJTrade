@@ -22,6 +22,10 @@ export default function ApiKeysPage() {
   const [alpacaSecretKey, setAlpacaSecretKey] = useState('')
   const [settradeAppId, setSettradeAppId] = useState('')
   const [settradeAppSecret, setSettradeAppSecret] = useState('')
+  const [settradeBrokerId, setSettradeBrokerId] = useState('')
+  const [settradeAppCode, setSettradeAppCode] = useState('')
+  const [settradeAccountNo, setSettradeAccountNo] = useState('')
+  const [settradePin, setSettradePin] = useState('')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState(null)
 
@@ -149,27 +153,37 @@ export default function ApiKeysPage() {
     }
   }
 
+  const settradeFields = [
+    ['settrade_app_id', settradeAppId, 'App Id'],
+    ['settrade_app_secret', settradeAppSecret, 'App Secret'],
+    ['settrade_broker_id', settradeBrokerId, 'Broker ID'],
+    ['settrade_app_code', settradeAppCode, 'App Code'],
+    ['settrade_account_no', settradeAccountNo, 'Account number'],
+    ['settrade_pin', settradePin, 'PIN'],
+  ].filter(([, value]) => value.trim())
+
   async function saveSettradeKeys() {
-    const appId = settradeAppId.trim()
-    const appSecret = settradeAppSecret.trim()
-    if (!appId || !appSecret) return
+    if (!settradeFields.length) return
     setLoading(true)
     setMessage(null)
     try {
-      await apiFetch('/api/vault/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service: 'settrade_app_id', api_key: appId }),
-      })
-      await apiFetch('/api/vault/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service: 'settrade_app_secret', api_key: appSecret }),
-      })
+      // Each field is saved on its own, so e.g. the PIN can be added later without re-entering the rest.
+      for (const [service, value] of settradeFields) {
+        await apiFetch('/api/vault/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ service, api_key: value.trim() }),
+        })
+      }
+      const saved = settradeFields.map(([, , label]) => label).join(', ')
       setSettradeAppId('')
       setSettradeAppSecret('')
+      setSettradeBrokerId('')
+      setSettradeAppCode('')
+      setSettradeAccountNo('')
+      setSettradePin('')
       await refresh()
-      setMessage('Settrade App Id / App Secret saved')
+      setMessage(`Settrade saved: ${saved}`)
     } catch (e) {
       setMessage(`Error: ${e.message}`)
     } finally {
@@ -181,12 +195,16 @@ export default function ApiKeysPage() {
     setLoading(true)
     setMessage(null)
     try {
-      await apiFetch('/api/vault/ping', {
+      const result = await apiFetch('/api/vault/ping', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ service: 'settrade' }),
       })
-      setMessage('Settrade: OK')
+      const parts = [`logged in (${result.environment})`]
+      if (result.account_no) parts.push(`account ${result.account_no}`)
+      if (result.cash != null) parts.push(`cash ฿${Number(result.cash).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+      parts.push(result.trading_enabled ? 'trading enabled' : result.environment === 'production' ? 'read-only (live account)' : 'add PIN to trade')
+      setMessage(`Settrade: ${parts.join(' · ')}${result.warning ? `. ${result.warning}` : ''}`)
     } catch (e) {
       setMessage(`Error: Settrade: ${e.message}`)
     } finally {
@@ -350,6 +368,10 @@ export default function ApiKeysPage() {
 
         <section className={styles.card} aria-label="Settrade credentials">
           <p className={styles.cardTitle}>Settrade (Thai market)</p>
+          <p className={styles.muted} style={{ margin: '6px 0 0' }}>
+            From Settrade Open API (Sandbox → My Apps). Leave Broker ID and App Code empty for the sandbox.
+            AJTrade only places orders on the sandbox; a live Settrade account is read-only.
+          </p>
           <div className={styles.field}>
             <div className={styles.label}>App Id</div>
             <input
@@ -372,11 +394,53 @@ export default function ApiKeysPage() {
                 placeholder="Paste Settrade app Secret"
                 aria-label="Settrade app Secret"
               />
+            </div>
+          </div>
+          <div className={styles.field}>
+            <div className={styles.rowWrap}>
+              <input
+                className={styles.input}
+                value={settradeBrokerId}
+                onChange={(e) => setSettradeBrokerId(e.target.value)}
+                placeholder="Broker ID (default SANDBOX)"
+                aria-label="Settrade broker ID"
+                autoComplete="off"
+              />
+              <input
+                className={styles.input}
+                value={settradeAppCode}
+                onChange={(e) => setSettradeAppCode(e.target.value)}
+                placeholder="App Code (default SANDBOX)"
+                aria-label="Settrade app code"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+          <div className={styles.field}>
+            <div className={styles.label}>Account number and trading PIN</div>
+            <div className={styles.rowWrap}>
+              <input
+                className={styles.input}
+                value={settradeAccountNo}
+                onChange={(e) => setSettradeAccountNo(e.target.value)}
+                placeholder="Account number, e.g. 12345678-E"
+                aria-label="Settrade account number"
+                autoComplete="off"
+              />
+              <input
+                className={styles.input}
+                type="password"
+                value={settradePin}
+                onChange={(e) => setSettradePin(e.target.value)}
+                placeholder="PIN (needed to place orders)"
+                aria-label="Settrade PIN"
+                autoComplete="new-password"
+              />
               <button
                 type="button"
                 className={styles.primary}
                 onClick={saveSettradeKeys}
-                disabled={loading || !settradeAppId.trim() || !settradeAppSecret.trim()}
+                disabled={loading || !settradeFields.length}
               >
                 Save
               </button>

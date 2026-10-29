@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { outlookLabel } from '../lib/outlook'
 import styles from '../styles/HeroStage.module.css'
 
 // Illustrative examples in the same design as the AI Insights cards. Cycles every few seconds; the
@@ -201,7 +202,7 @@ export default function HeroStage() {
         onPointerMove={onPointerMove}
         onPointerEnter={() => setHovering(true)}
         onPointerLeave={onPointerLeave}
-        aria-label={`Example AI insight for ${s.symbol}: ${s.confidence}% ${s.signal}`}
+        aria-label={`Example AI insight for ${s.symbol}: ${s.confidence}% ${outlookLabel(s.signal)}`}
         role="img"
       >
         <div ref={innerRef} className={styles.inner}>
@@ -225,7 +226,7 @@ export default function HeroStage() {
           {/* SHAP drivers */}
           <div className={`${styles.layer} ${styles.layerDrivers}`}>
             <div className={styles.card}>
-              <p className={styles.label}>Why the model says {s.signal}</p>
+              <p className={styles.label}>Why the outlook is {outlookLabel(s.signal)}</p>
               <ul className={styles.drivers}>
                 {s.drivers.map((d, i) => {
                   const width = `${(Math.abs(d.value) / maxDriver) * 50}%`
@@ -264,10 +265,10 @@ export default function HeroStage() {
           <div className={`${styles.layer} ${styles.layerSignal}`}>
             <div className={`${styles.card} ${styles.signalCard} ${s.signal === 'BUY' ? styles.signalBuy : s.signal === 'SELL' ? styles.signalSell : ''}`}>
               <span className={styles.glare} aria-hidden="true" />
-              <p className={styles.label}>AI signal</p>
+              <p className={styles.label}>AI outlook</p>
               <p className={styles.score}>
                 <span className={styles.scoreValue}>{confidence}%</span>
-                <span key={s.signal + s.symbol} className={`${styles.scoreSignal} ${styles.swap} ${toneOf(s.signal)}`}>{s.signal}</span>
+                <span key={s.signal + s.symbol} className={`${styles.scoreSignal} ${styles.swap} ${toneOf(s.signal)}`}>{outlookLabel(s.signal)}</span>
               </p>
               <p className={styles.scoreText}>
                 <strong>{s.probUp}%</strong> chance it closes higher next day
@@ -278,9 +279,9 @@ export default function HeroStage() {
                 <span className={styles.gaugeMarker} style={{ left: `${s.probUp}%` }} />
               </div>
               <div className={styles.gaugeScale}>
-                <span>SELL</span>
-                <span>HOLD</span>
-                <span>BUY</span>
+                <span>Bearish</span>
+                <span>Neutral</span>
+                <span>Bullish</span>
               </div>
             </div>
           </div>
@@ -314,7 +315,7 @@ export default function HeroStage() {
             onClick={() => setIndex(i)}
           >
             {item.symbol}
-            <span className={`${styles.switchSignal} ${toneOf(item.signal)}`}>{item.signal}</span>
+            <span className={`${styles.switchSignal} ${toneOf(item.signal)}`}>{outlookLabel(item.signal)}</span>
             {i === index && !hovering ? <span key={index} className={styles.switchProgress} /> : null}
           </button>
         ))}

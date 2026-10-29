@@ -22,20 +22,27 @@
   transition: background 0.2s, transform 0.2s;
 }
 
+/* Larger hit area on touch screens without changing the visible size. */
+.infoBtn::after {
+  content: '';
+  position: absolute;
+  inset: -10px;
+}
+
 .infoTip:hover .infoBtn,
-.infoBtn:focus-visible {
+.infoBtn:focus-visible,
+.infoBtn[aria-expanded='true'] {
   background: var(--aj-cta-gradient);
   transform: scale(1.08);
 }
 
+/* Rendered into <body> with fixed position by InfoTip.js (left/top/width set inline). */
 .tooltip {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 10px);
-  left: -12px;
+  position: fixed;
+  z-index: 1000;
   width: 320px;
-  max-width: calc(100vw - 48px);
-  max-height: min(60vh, 420px);
+  max-width: calc(100vw - 24px);
+  max-height: min(60vh, 440px);
   overflow-y: auto;
   display: grid;
   gap: 6px;
@@ -52,24 +59,16 @@
   text-transform: none;
   letter-spacing: normal;
   white-space: normal;
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(-4px);
-  pointer-events: none;
-  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+  overflow-wrap: anywhere;
+  animation: tooltipIn 0.16s ease;
 }
 
-.alignEnd {
-  left: auto;
-  right: -12px;
+.wide {
+  width: 420px;
 }
 
-.infoTip:hover .tooltip,
-.infoTip:focus-within .tooltip {
-  opacity: 1;
-  visibility: visible;
-  transform: none;
-  pointer-events: auto;
+.tooltip p {
+  margin: 0;
 }
 
 .tooltip strong {
@@ -81,4 +80,28 @@
   border-radius: 6px;
   background: var(--aj-surface);
   font-size: 11.5px;
+}
+
+.tooltip a {
+  color: var(--aj-indigo);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@keyframes tooltipIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip {
+    animation: none;
+  }
 }

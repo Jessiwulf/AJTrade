@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import AppShell from '../components/AppShell'
 import PortfolioAllocation from '../components/PortfolioAllocation'
 import { apiFetch } from '../lib/api'
+import { symbolProvider, useBroker } from '../lib/broker'
 import { formatQuantity, unitWord, usdOptions } from '../lib/format'
 import styles from '../styles/Portfolio.module.css'
 
@@ -61,6 +62,11 @@ function StatTile({ label, value, sub, tone, hint }) {
 }
 
 export default function PortfolioPage() {
+  // Everything on this page belongs to the member's active broker (Alpaca or Settrade).
+  const { provider, meta, loaded: brokerLoaded } = useBroker()
+  const isSettrade = provider === 'settrade'
+  const accountName = isSettrade ? 'Settrade account' : 'Alpaca paper account'
+  const currencySymbol = meta.currency === 'THB' ? '฿' : '$'
   const [portfolio, setPortfolio] = useState(null)
   const [paperAccount, setPaperAccount] = useState(null)
   const [paperLoaded, setPaperLoaded] = useState(false)
@@ -206,7 +212,7 @@ export default function PortfolioPage() {
     }
   }
 
-  // The portfolio mirrors the Alpaca paper account: pull the latest cash and positions from Alpaca.
+  // The portfolio mirrors the active broker account: pull the latest cash and positions from it.
   async function syncFromAlpaca() {
     try {
       await apiFetch('/api/portfolio/sync-paper', { method: 'POST' })
@@ -220,7 +226,7 @@ export default function PortfolioPage() {
     runAction(async () => {
       await apiFetch('/api/portfolio/sync-paper', { method: 'POST' })
       await refreshAll()
-    }, 'Portfolio synced from your Alpaca paper account')
+    }, `Portfolio synced from your ${accountName}`)
   }
 
   function prefillOrder(symbol, side) {
@@ -258,8 +264,8 @@ export default function PortfolioPage() {
       }
       setMessage(
         synced
-          ? `${orderSide} order for ${s} sent to Alpaca and your portfolio is up to date.`
-          : `${orderSide} order for ${s} was accepted by Alpaca. Holdings will update once the sync finishes.`
+          ? `${orderSide} order for ${s} sent to ${meta.label} and your portfolio is up to date.`
+          : `${orderSide} order for ${s} was accepted by ${meta.label}. Holdings will update once it fills and syncs.`
       )
     } catch (e) {
       setMessage(`Error: ${e?.message || 'Order submission failed'}`)
@@ -269,6 +275,7 @@ export default function PortfolioPage() {
   }
 
   useEffect(() => {
+    if (!brokerLoaded) return
     ;(async () => {
       setLoading(true)
       await syncFromAlpaca()
@@ -276,10 +283,15 @@ export default function PortfolioPage() {
       setLoading(false)
     })()
     apiFetch('/api/watchlist')
-      .then((rows) => setWatchlist((Array.isArray(rows) ? rows : []).map((r) => String(r.symbol || '').toUpperCase()).filter(Boolean)))
+      .then((rows) => setWatchlist(
+        (Array.isArray(rows) ? rows : [])
+          .filter((r) => symbolProvider(r.symbol, r.provider) === provider)
+          .map((r) => String(r.symbol || '').toUpperCase())
+          .filter(Boolean),
+      ))
       .catch(() => setWatchlist([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [brokerLoaded, provider])
 
   const heldSymbols = useMemo(
     () => (portfolio?.positions || []).map((p) => String(p.symbol).toUpperCase()).filter(Boolean),
@@ -409,17 +421,17 @@ export default function PortfolioPage() {
         ) : null}
 
         {needsInit ? (
-          <section className={`${styles.card} ${styles.initCard}`} aria-label="Connect Alpaca">
-            <div className={styles.initIcon} aria-hidden="true">$</div>
-            <h2 className={styles.initTitle}>Connect your Alpaca paper account</h2>
+          <section className={`${styles.card} ${styles.initCard}`} aria-label={`Connect ${meta.label}`}>
+            <div className={styles.initIcon} aria-hidden="true">{currencySymbol}</div>
+            <h2 className={styles.initTitle}>Connect your {accountName}</h2>
             <p className={styles.muted}>
-              Your portfolio mirrors your Alpaca paper account: its cash, holdings and every order you or the bot place.
-              Add your Alpaca paper keys, then sync.
+              Your portfolio mirrors your {accountName}: its cash, holdings and every order you or the bot place.
+              Add your {meta.label} {isSettrade ? 'App Id, App Secret and account number' : 'paper keys'}, then sync.
             </p>
             <div className={styles.initRow}>
-              <Link href="/api-keys" className={`${styles.primary} ${styles.linkButton}`}>Add Alpaca keys</Link>
+              <Link href="/api-keys" className={`${styles.primary} ${styles.linkButton}`}>Add {meta.label} keys</Link>
               <button type="button" className={styles.secondary} onClick={syncPaperPortfolio} disabled={loading}>
-                Sync from Alpaca
+                Sync from {meta.label}
               </button>
             </div>
           </section>
@@ -449,7 +461,7 @@ export default function PortfolioPage() {
                 label="Cash"
                 value={portfolio ? formatMoney(totals.cash) : '—'}
                 sub={portfolio ? `${totals.cashPct.toFixed(1)}% of portfolio` : null}
-                hint={paperAccount?.buying_power ? `Alpaca buying power ${formatMoney(paperAccount.buying_power)}` : null}
+                hint={paperAccount?.buying_power ? `${meta.label} buying power ${formatMoney(paperAccount.buying_power)}` : null}
               />
             </section>
 
@@ -543,7 +555,7 @@ export default function PortfolioPage() {
                   ) : (
                     <div className={styles.empty}>
                       <p><strong>No holdings yet.</strong></p>
-                      <p className={styles.muted}>Your Alpaca paper account has no positions. Place a paper order to buy your first stock.</p>
+                      <p className={styles.muted}>Your {accountName} has no positions. Place an order to buy your first {isSettrade ? 'Thai stock' : 'stock'}.</p>
                       <div className={styles.emptyActions}>
                         <button type="button" className={styles.primary} onClick={() => ticketRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
                           Place a paper order
@@ -589,7 +601,7 @@ export default function PortfolioPage() {
                 <section className={`${styles.card} ${styles.ticket}`} aria-label="Paper trade" ref={ticketRef}>
                   <div className={styles.cardHead}>
                     <h2 className={styles.cardTitle}>Paper trade</h2>
-                    <span className={styles.muted}>via Alpaca</span>
+                    <span className={styles.muted}>via {meta.label}{isSettrade ? ' sandbox' : ''}</span>
                   </div>
 
                   <div className={styles.sideToggle} role="group" aria-label="Order side">
@@ -610,7 +622,7 @@ export default function PortfolioPage() {
                     className={styles.input}
                     value={orderSymbol}
                     onChange={(e) => setOrderSymbol(e.target.value.toUpperCase())}
-                    placeholder="AAPL"
+                    placeholder={isSettrade ? 'PTT.BK' : 'AAPL'}
                     autoCapitalize="characters"
                     list="portfolio-symbols"
                   />
@@ -630,7 +642,7 @@ export default function PortfolioPage() {
                   ) : null}
 
                   <div className={styles.amountHead}>
-                    <label className={styles.fieldLabel} htmlFor="order-amount">{orderByShares ? unitWord(orderSymbolUpper, { capitalize: true }) : 'Amount ($)'}</label>
+                    <label className={styles.fieldLabel} htmlFor="order-amount">{orderByShares ? unitWord(orderSymbolUpper, { capitalize: true }) : `Amount (${currencySymbol})`}</label>
                     <div className={styles.modeToggle} role="group" aria-label="Order by">
                       <button type="button" className={orderByShares ? styles.modeOn : ''} onClick={() => setOrderMode('shares')} aria-pressed={orderByShares}>{unitWord(orderSymbolUpper, { capitalize: true })}</button>
                       <button
@@ -641,7 +653,7 @@ export default function PortfolioPage() {
                         title={orderSide === 'SELL' ? `Sell orders are placed in ${orderUnit}` : undefined}
                         aria-pressed={!orderByShares}
                       >
-                        Dollars
+                        {isSettrade ? 'Baht' : 'Dollars'}
                       </button>
                     </div>
                   </div>
@@ -652,7 +664,7 @@ export default function PortfolioPage() {
                       value={orderAmount}
                       onChange={(e) => setOrderAmount(e.target.value)}
                       inputMode="decimal"
-                      placeholder={orderByShares ? '10' : '1000'}
+                      placeholder={orderByShares ? (isSettrade ? '100' : '10') : (isSettrade ? '10000' : '1000')}
                     />
                     {orderSide === 'SELL' && heldForOrder ? (
                       <button type="button" className={styles.chipBtn} onClick={() => setOrderAmount(String(heldForOrder.quantity))}>Max</button>
@@ -686,15 +698,19 @@ export default function PortfolioPage() {
                     {loading ? 'Working…' : `${orderSide === 'BUY' ? 'Buy' : 'Sell'} ${orderSymbolUpper || ''}`.trim()}
                   </button>
                   <p className={styles.small}>
-                    {paperReady || !paperLoaded
-                      ? 'Paper money only. The order goes to your Alpaca paper account, then syncs back here.'
-                      : 'Your Alpaca paper account did not respond. Orders need working Alpaca paper keys (API Management).'}
+                    {isSettrade
+                      ? (paperReady || !paperLoaded
+                        ? 'Sandbox only. Thai stocks trade in board lots of 100 shares as a day limit order at the current price; the order goes to your Settrade sandbox account, then syncs back here.'
+                        : 'Your Settrade account did not respond. Orders need your Settrade App Id, App Secret, account number and PIN (API Management).')
+                      : (paperReady || !paperLoaded
+                        ? 'Paper money only. The order goes to your Alpaca paper account, then syncs back here.'
+                        : 'Your Alpaca paper account did not respond. Orders need working Alpaca paper keys (API Management).')}
                   </p>
                 </section>
 
-                <section className={styles.card} aria-label="Alpaca paper account">
+                <section className={styles.card} aria-label={accountName}>
                   <div className={styles.cardHead}>
-                    <h2 className={styles.cardTitle}>Alpaca paper account</h2>
+                    <h2 className={styles.cardTitle}>{isSettrade ? 'Settrade account' : 'Alpaca paper account'}</h2>
                     {paperReady ? (
                       <span className={`${styles.statusPill} ${String(paperAccount.status).toUpperCase() === 'ACTIVE' ? styles.statusOn : ''}`}>
                         <i aria-hidden="true" />{paperAccount.status || 'Unknown'}
@@ -706,16 +722,16 @@ export default function PortfolioPage() {
                       <div><dt>Portfolio value</dt><dd>{formatMoney(paperAccount.portfolio_value)}</dd></div>
                       <div><dt>Buying power</dt><dd>{formatMoney(paperAccount.buying_power)}</dd></div>
                       <div><dt>Cash</dt><dd>{formatMoney(paperAccount.cash)}</dd></div>
-                      <div><dt>Positions at Alpaca</dt><dd>{(paperAccount.positions || []).length}</dd></div>
+                      <div><dt>Positions at {meta.label}</dt><dd>{(paperAccount.positions || []).length}</dd></div>
                     </dl>
                   ) : (
                     <p className={styles.muted}>
                       {paperLoaded ? 'Not connected. ' : 'Checking connection… '}
-                      {paperLoaded ? <Link href="/api-keys" className={styles.link}>Add Alpaca keys →</Link> : null}
+                      {paperLoaded ? <Link href="/api-keys" className={styles.link}>Add {meta.label} keys →</Link> : null}
                     </p>
                   )}
                   {inSync === false ? (
-                    <p className={styles.small}>Your portfolio here differs from Alpaca. Syncing replaces the cash and holdings here with Alpaca&apos;s.</p>
+                    <p className={styles.small}>Your portfolio here differs from {meta.label}. Syncing replaces the cash and holdings here with {meta.label}&apos;s.</p>
                   ) : null}
                   <div className={styles.btnRow}>
                     <button
@@ -723,9 +739,9 @@ export default function PortfolioPage() {
                       className={inSync ? styles.syncDone : inSync === false ? styles.primary : styles.secondary}
                       onClick={syncPaperPortfolio}
                       disabled={loading}
-                      title={inSync ? 'Cash and holdings already match Alpaca' : undefined}
+                      title={inSync ? `Cash and holdings already match ${meta.label}` : undefined}
                     >
-                      {inSync ? 'Synced with Alpaca' : 'Sync from Alpaca'}
+                      {inSync ? `Synced with ${meta.label}` : `Sync from ${meta.label}`}
                     </button>
                     <button type="button" className={styles.secondary} onClick={() => runAction(refreshAll)} disabled={loading}>Refresh</button>
                   </div>

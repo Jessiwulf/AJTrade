@@ -34,6 +34,10 @@ DCA_STRATEGY = "Dollar-Cost Averaging"
 DEFAULT_DCA_INTERVAL_HOURS = 24
 
 
+def _outlook(signal: Any) -> str:
+    return {'BUY': 'Bullish', 'SELL': 'Bearish', 'HOLD': 'Neutral'}.get(str(signal or '').upper(), str(signal or 'n/a'))
+
+
 def get_bot_cooldown() -> timedelta:
     """Minimum gap between bot trades on the same asset (AJTRADE_BOT_COOLDOWN_MINUTES, default 3).
 
@@ -83,27 +87,27 @@ def decide_strategy_side(strategy: str, insight: Dict[str, Any], min_confidence:
         return None, f"News sentiment {sentiment:+.2f} is not strong enough"
 
     if ai_signal not in {"BUY", "SELL"} or confidence < min_confidence:
-        return None, f"AI signal {ai_signal} at {confidence}% confidence (needs BUY/SELL at {min_confidence}%+)"
+        return None, f"AI outlook {_outlook(ai_signal)} at {confidence}% confidence (needs Bullish/Bearish at {min_confidence}%+)"
 
     if strategy == "Mean Reversion":
         if ai_signal == "BUY" and price_change <= -MEAN_REVERSION_MOVE_PCT:
-            return "BUY", f"AI BUY after a {price_change:.1f}% drop"
+            return "BUY", f"Bullish AI outlook after a {price_change:.1f}% drop"
         if ai_signal == "SELL" and price_change >= MEAN_REVERSION_MOVE_PCT:
-            return "SELL", f"AI SELL after a {price_change:+.1f}% rise"
+            return "SELL", f"Bearish AI outlook after a {price_change:+.1f}% rise"
         return None, (
-            f"AI {ai_signal} but price moved {price_change:+.1f}% "
+            f"AI outlook {_outlook(ai_signal)} but price moved {price_change:+.1f}% "
             f"(needs a {MEAN_REVERSION_MOVE_PCT:.0f}% move the other way)"
         )
 
     if strategy == "AI Momentum + Sentiment":
         if (ai_signal == "BUY" and sentiment > 0) or (ai_signal == "SELL" and sentiment < 0):
-            return ai_signal, f"AI {ai_signal} confirmed by news sentiment {sentiment:+.2f}"
-        return None, f"AI {ai_signal} but news sentiment {sentiment:+.2f} disagrees"
+            return ai_signal, f"{_outlook(ai_signal)} AI outlook confirmed by news sentiment {sentiment:+.2f}"
+        return None, f"AI outlook {_outlook(ai_signal)} but news sentiment {sentiment:+.2f} disagrees"
 
     # Trend Following (default)
     if (ai_signal == "BUY" and price_change > 0) or (ai_signal == "SELL" and price_change < 0):
-        return ai_signal, f"AI {ai_signal} in line with the {price_change:+.1f}% trend"
-    return None, f"AI {ai_signal} against the {price_change:+.1f}% trend"
+        return ai_signal, f"{_outlook(ai_signal)} AI outlook in line with the {price_change:+.1f}% trend"
+    return None, f"AI outlook {_outlook(ai_signal)} against the {price_change:+.1f}% trend"
 
 
 def _exit_trigger(
@@ -646,13 +650,128 @@ async def _submit_order_to_alpaca(
     return outcome
 
 
-async def _sync_after_fill(owner_id: str, asset_symbol: str) -> None:
-    """Refreshes the local portfolio (cash, positions) and trade history from Alpaca after a bot fill, so
-    the recorded trade is Alpaca's actual fill."""
-    from app.api.portfolio import sync_account_from_alpaca
+# --- Broker routing -------------------------------------------------------------------------
+# Each asset trades at the broker that lists it: SET stocks (".BK") on Settrade, everything else on
+# Alpaca. Settrade order numbers are logged with an "st-" prefix so pending orders are looked up at
+# the right broker.
+_SETTRADE_ORDER_PREFIX = "st-"
+
+
+async def _broker_for(asset_symbol: str) -> str:
+    from app.core.brokers import provider_for_symbol
+
+    return await provider_for_symbol(asset_symbol)
+
+
+def _broker_label(provider: str) -> str:
+    return "Settrade" if provider == "settrade" else "Alpaca"
+
+
+def _broker_error_reason(exc: HTTPException, provider: str) -> str:
+    if provider != "settrade":
+        return _alpaca_error_reason(exc)
+    detail = str(exc.detail or "").strip()
+    if exc.status_code == status.HTTP_409_CONFLICT:
+        return "Rejected: Settrade Not Connected"
+    if exc.status_code == status.HTTP_403_FORBIDDEN:
+        return "Rejected: Settrade Live Account (sandbox only)"
+    return f"Rejected: Settrade - {detail or 'order failed'}"
+
+
+async def _broker_cash(owner_id: str, provider: str) -> Decimal:
+    from app.core.brokers import get_account
+
+    account = await get_account(owner_id, provider)
+    return _coerce_decimal(account.get("cash"))
+
+
+async def _broker_position_quantities(owner_id: str, provider: str) -> Dict[str, Decimal]:
+    if provider != "settrade":
+        return await _get_alpaca_position_quantities(owner_id)
+    from app.core.brokers import get_positions
+
+    return {
+        _normalize_symbol(str(p.get("symbol") or "")): _coerce_decimal(p.get("qty"))
+        for p in await get_positions(owner_id, provider)
+        if p.get("symbol")
+    }
+
+
+async def _submit_order_to_settrade(
+    owner_id: str,
+    signal_data: SignalData,
+    *,
+    sell_quantity: Optional[Decimal] = None,
+) -> Dict[str, Any]:
+    """Day limit order on the Settrade sandbox at the current price (SET tick), in whole board lots."""
+    from app.api.market import get_market_price
+    from app.core import settrade
+
+    asset_symbol = _normalize_symbol(signal_data.asset_symbol)
+    try:
+        price = _coerce_decimal(signal_data.requested_price)
+        if price <= 0:
+            price = _coerce_decimal(await get_market_price(asset_symbol))
+        if price <= 0:
+            return {"state": "rejected", "message": "Rejected: No Market Price"}
+        limit_price = settrade.round_to_tick(price)
+        if signal_data.side == "BUY":
+            volume = settrade.board_lot_volume(signal_data.requested_amount, limit_price)
+            if volume <= 0:
+                return {"state": "rejected", "message": f"Rejected: Amount Below One Board Lot ({settrade.BOARD_LOT} shares)"}
+        else:
+            volume = int(_coerce_decimal(sell_quantity) // settrade.BOARD_LOT) * settrade.BOARD_LOT
+            if volume <= 0:
+                return {"state": "rejected", "message": f"Rejected: Position Below One Board Lot ({settrade.BOARD_LOT} shares)"}
+        order = await settrade.place_order(owner_id, symbol=asset_symbol, side=signal_data.side, volume=volume, price=limit_price)
+    except HTTPException as exc:
+        return {"state": "rejected", "message": _broker_error_reason(exc, "settrade")}
+
+    order_no = order.get("orderNo") or order.get("orderNumber")
+    if not order_no:
+        return {"state": "rejected", "message": "Rejected: Settrade returned no order number"}
+    outcome = await _settrade_outcome(owner_id, str(order_no))
+    waited = 0.0
+    while outcome["state"] == "pending" and waited < _ORDER_FILL_WAIT_SECONDS:
+        await asyncio.sleep(1.0)
+        waited += 1.0
+        try:
+            outcome = await _settrade_outcome(owner_id, str(order_no))
+        except HTTPException:
+            break
+    return outcome
+
+
+async def _settrade_outcome(owner_id: str, order_no: str) -> Dict[str, Any]:
+    from app.core import settrade
 
     try:
-        await sync_account_from_alpaca(get_database(), owner_id)
+        outcome = settrade.order_outcome(await settrade.get_order(owner_id, order_no))
+    except HTTPException:
+        outcome = {"state": "pending"}
+    outcome["order_id"] = f"{_SETTRADE_ORDER_PREFIX}{order_no}"
+    return outcome
+
+
+async def _submit_order(owner_id: str, signal_data: SignalData, *, sell_quantity: Optional[Decimal] = None) -> Dict[str, Any]:
+    if await _broker_for(signal_data.asset_symbol) == "settrade":
+        return await _submit_order_to_settrade(owner_id, signal_data, sell_quantity=sell_quantity)
+    return await _submit_order_to_alpaca(owner_id, signal_data, sell_quantity=sell_quantity)
+
+
+async def _lookup_order_outcome(owner_id: str, broker_order_id: str) -> Dict[str, Any]:
+    if str(broker_order_id).startswith(_SETTRADE_ORDER_PREFIX):
+        return await _settrade_outcome(owner_id, str(broker_order_id)[len(_SETTRADE_ORDER_PREFIX):])
+    return _order_outcome(await _get_alpaca_order(owner_id, broker_order_id))
+
+
+async def _sync_after_fill(owner_id: str, asset_symbol: str) -> None:
+    """Refreshes the local portfolio (cash, positions) and trade history from the asset's broker after
+    a bot fill, so the recorded trade is the broker's actual fill."""
+    from app.api.portfolio import sync_account
+
+    try:
+        await sync_account(get_database(), owner_id, await _broker_for(asset_symbol))
     except Exception as exc:
         logger.warning("bot_account_sync_failed owner=%s asset=%s error=%s", owner_id, asset_symbol, exc)
 
@@ -877,34 +996,33 @@ async def evaluate_and_execute_trade(signal_data: SignalData, owner_id: str) -> 
         )
         return ExecutionResult(ok=False, action_taken="Rejected", asset_symbol=asset_symbol, mode=mode, reason=reason)
 
-    # Step 5: Alpaca guardrails. One open order per asset and side; a BUY needs enough Alpaca cash; a
-    # SELL needs shares the bot bought that Alpaca still holds (manual shares are never sold).
-    from app.core.alpaca import get_alpaca_account
-
+    # Step 5: Broker guardrails. One open order per asset and side; a BUY needs enough cash at the
+    # asset's broker; a SELL needs shares the bot bought that the broker still holds (manual shares
+    # are never sold).
     reason = None
     sell_quantity: Optional[Decimal] = None
+    provider = await _broker_for(asset_symbol)
     try:
         if await _has_pending_order(owner_id, asset_symbol, signal_data.side):
             reason = "Rejected: Order Already Pending"
         elif signal_data.side == "BUY":
-            account = await get_alpaca_account(owner_id)
-            if Decimal(str(signal_data.requested_amount)) > _coerce_decimal(account.get("cash")):
+            if Decimal(str(signal_data.requested_amount)) > await _broker_cash(owner_id, provider):
                 reason = "Rejected: Insufficient Cash"
         else:
             bot_quantity = await get_bot_position_quantity(owner_id, asset_symbol)
-            alpaca_quantity = (await _get_alpaca_position_quantities(owner_id)).get(asset_symbol, Decimal("0"))
-            sell_quantity = min(bot_quantity, alpaca_quantity)
+            broker_quantity = (await _broker_position_quantities(owner_id, provider)).get(asset_symbol, Decimal("0"))
+            sell_quantity = min(bot_quantity, broker_quantity)
             if bot_quantity <= 0:
                 reason = "Rejected: No Bot Position"
             elif sell_quantity <= 0:
-                reason = "Rejected: No Alpaca Position"
+                reason = f"Rejected: No {_broker_label(provider)} Position"
             else:
                 # Sell at most what this signal is worth, capped at the bot's shares.
                 price = _coerce_decimal(signal_data.requested_price)
                 if price > 0:
                     sell_quantity = min(sell_quantity, Decimal(str(signal_data.requested_amount)) / price)
     except HTTPException as exc:
-        reason = _alpaca_error_reason(exc)
+        reason = _broker_error_reason(exc, provider)
     if reason:
         await _log_execution(
             owner_id=owner_id,
@@ -916,8 +1034,8 @@ async def evaluate_and_execute_trade(signal_data: SignalData, owner_id: str) -> 
         )
         return ExecutionResult(ok=False, action_taken="Rejected", asset_symbol=asset_symbol, mode=mode, reason=reason)
 
-    # Step 6: Send the order to Alpaca and book the fill.
-    outcome = await _submit_order_to_alpaca(owner_id, signal_data, sell_quantity=sell_quantity)
+    # Step 6: Send the order to the asset's broker and book the fill.
+    outcome = await _submit_order(owner_id, signal_data, sell_quantity=sell_quantity)
     return await _finish_order(
         owner_id=owner_id,
         asset_symbol=asset_symbol,
@@ -925,7 +1043,7 @@ async def evaluate_and_execute_trade(signal_data: SignalData, owner_id: str) -> 
         outcome=outcome,
         trailing_stop_pct=rule.get("trailing_stop_pct"),
         mode=mode,
-        success_reason="Filled on Alpaca paper",
+        success_reason="Filled on Settrade sandbox" if provider == "settrade" else "Filled on Alpaca paper",
     )
 
 
@@ -939,8 +1057,8 @@ async def _execute_position_exit(
     trailing_stop_pct: Any,
     trigger: str,
 ) -> ExecutionResult:
-    """Sells the bot's whole position on Alpaca. Exits reduce risk, so they skip the entry guardrails
-    (cooldown, daily loss limit, max capital)."""
+    """Sells the bot's whole position at the asset's broker. Exits reduce risk, so they skip the entry
+    guardrails (cooldown, daily loss limit, max capital)."""
     signal_data = SignalData(
         asset_symbol=asset_symbol,
         signal_received=f"EXIT: {trigger}",
@@ -949,10 +1067,12 @@ async def _execute_position_exit(
         requested_price=float(price),
         metadata={"source": "bot-risk-exit", "trigger": trigger},
     )
+    provider = await _broker_for(asset_symbol)
     if mode == "live":
         outcome: Dict[str, Any] = {"state": "rejected", "message": "Rejected: Live Trading Not Enabled"}
     else:
-        outcome = await _submit_order_to_alpaca(owner_id, signal_data, sell_quantity=quantity)
+        outcome = await _submit_order(owner_id, signal_data, sell_quantity=quantity)
+    venue = "Settrade sandbox" if provider == "settrade" else "Alpaca paper"
     return await _finish_order(
         owner_id=owner_id,
         asset_symbol=asset_symbol,
@@ -960,7 +1080,7 @@ async def _execute_position_exit(
         outcome=outcome,
         trailing_stop_pct=trailing_stop_pct,
         mode=mode,
-        success_reason=f"{trigger} exit filled on Alpaca paper",
+        success_reason=f"{trigger} exit filled on {venue}",
     )
 
 
@@ -979,7 +1099,7 @@ async def reconcile_pending_orders(owner_id: str) -> List[ExecutionResult]:
     results: List[ExecutionResult] = []
     for row in rows:
         try:
-            outcome = _order_outcome(await _get_alpaca_order(owner_id, row["broker_order_id"]))
+            outcome = await _lookup_order_outcome(owner_id, row["broker_order_id"])
         except HTTPException as exc:
             logger.warning("bot_pending_order_lookup_failed owner=%s order=%s error=%s", owner_id, row["broker_order_id"], exc.detail)
             continue
@@ -1020,7 +1140,14 @@ async def reconcile_pending_orders(owner_id: str) -> List[ExecutionResult]:
             },
         )
         results.append(
-            ExecutionResult(ok=True, action_taken="Executed", asset_symbol=asset_symbol, mode="paper", execution_price=float(outcome["fill_price"]), reason="Filled on Alpaca paper")
+            ExecutionResult(
+                ok=True,
+                action_taken="Executed",
+                asset_symbol=asset_symbol,
+                mode="paper",
+                execution_price=float(outcome["fill_price"]),
+                reason="Filled on Settrade sandbox" if str(row["broker_order_id"]).startswith(_SETTRADE_ORDER_PREFIX) else "Filled on Alpaca paper",
+            )
         )
     return results
 
@@ -1047,14 +1174,22 @@ async def monitor_position_exits(
     results: List[ExecutionResult] = []
     if not rows:
         return results
-    try:
-        alpaca_quantities = await _get_alpaca_position_quantities(owner_id)
-    except HTTPException as exc:
-        logger.debug("bot_exit_check_skipped owner=%s error=%s", owner_id, exc.detail)
-        return results
+    broker_quantities: Dict[str, Optional[Dict[str, Decimal]]] = {}
+
+    async def holdings_at(provider: str) -> Optional[Dict[str, Decimal]]:
+        if provider not in broker_quantities:
+            try:
+                broker_quantities[provider] = await _broker_position_quantities(owner_id, provider)
+            except HTTPException as exc:
+                logger.debug("bot_exit_check_skipped owner=%s provider=%s error=%s", owner_id, provider, exc.detail)
+                broker_quantities[provider] = None
+        return broker_quantities[provider]
 
     for row in rows:
         asset_symbol = row["asset_symbol"]
+        alpaca_quantities = await holdings_at(await _broker_for(asset_symbol))
+        if alpaca_quantities is None:
+            continue
         entry_price = _coerce_decimal(row["entry_price"])
         quantity = _coerce_decimal(row["quantity"])
         if entry_price <= 0 or quantity <= 0:

@@ -25,3 +25,4 @@ transformers==4.41.2
 torch==2.3.1
 shap==0.46.0
 apscheduler==3.10.4
+matplotlib==3.8.4

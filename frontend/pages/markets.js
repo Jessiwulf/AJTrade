@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import Link from 'next/link'
 import AppShell from '../components/AppShell'
 import { apiFetch } from '../lib/api'
+import { useBroker, useProviderSymbols } from '../lib/broker'
 import styles from '../styles/Markets.module.css'
 
 const LOOKBACK_OPTIONS = [7, 30, 90]
@@ -90,6 +91,9 @@ export default function MarketsPage() {
 
   const loading = isLoading && !items.length
   const errorMessage = error?.message || ''
+  // Only the active broker's assets (Alpaca: US stocks & crypto, Settrade: Thai SET stocks).
+  const { provider } = useBroker()
+  const { belongs } = useProviderSymbols(provider)
 
   async function loadOlderNews(symbol) {
     const current = items.find((item) => item.symbol === symbol)
@@ -225,13 +229,13 @@ export default function MarketsPage() {
 
         {loading ? <section className={styles.emptyState}>Loading watchlist news...</section> : null}
         {!loading && errorMessage ? <section className={styles.emptyState}>Error: {errorMessage}</section> : null}
-        {!loading && !errorMessage && !items.length ? (
+        {!loading && !errorMessage && !items.some((item) => belongs(item.symbol)) ? (
           <section className={styles.emptyState}>
             No watchlist assets found. Add assets on <Link href="/watchlist">Watchlist</Link>. To populate live articles, save a NewsAPI key on <Link href="/api-keys">API Management</Link>.
           </section>
         ) : null}
 
-        {items.map((item) => (
+        {items.filter((item) => belongs(item.symbol)).map((item) => (
           <section key={item.symbol} className={styles.assetCard}>
             <header className={styles.assetHeader}>
               <div className={styles.assetTitleBlock}>

@@ -8,22 +8,18 @@ const NEUTRAL = [236, 239, 243]
 const BULLISH = [21, 128, 61]
 const BEARISH = [185, 28, 28]
 
-function dayKey(date) {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
-
+// News is grouped by UTC day on the server, so the columns are UTC days too.
 function lastDays(count) {
   const days = []
-  const today = new Date()
+  const now = new Date()
   for (let i = count - 1; i >= 0; i -= 1) {
-    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i)
-    days.push({ key: dayKey(d), date: d })
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i))
+    days.push({ key: d.toISOString().slice(0, 10), date: d })
   }
   return days
 }
+
+const UTC_DAY = { timeZone: 'UTC' }
 
 // Diverging scale: bearish red <- neutral grey -> bullish green.
 function cellColor(avg) {
@@ -60,6 +56,7 @@ export default function SentimentHeatmapGrid({ rows }) {
   const hasAnyDaily = grid.some((row) => days.some((day) => row.byDay.has(day.key)))
   const selectedDay = selected ? grid.find((r) => r.symbol === selected.symbol)?.byDay.get(selected.date) : null
   const showValues = range <= 14
+  const uncovered = (rows || []).filter((row) => !row.news_coverage).map((row) => row.symbol)
 
   return (
     <details className={styles.heatDetails}>
@@ -107,7 +104,7 @@ export default function SentimentHeatmapGrid({ rows }) {
               {days.map((day, i) => (
                 <span key={day.key} className={styles.heatDayLabel}>
                   {showValues || i % 3 === 0 || i === days.length - 1
-                    ? day.date.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
+                    ? day.date.toLocaleDateString(undefined, { ...UTC_DAY, month: 'numeric', day: 'numeric' })
                     : ''}
                 </span>
               ))}
@@ -118,7 +115,7 @@ export default function SentimentHeatmapGrid({ rows }) {
                   {days.map((day) => {
                     const entry = row.byDay.get(day.key)
                     const isSelected = selected?.symbol === row.symbol && selected?.date === day.key
-                    const dateText = day.date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                    const dateText = day.date.toLocaleDateString(undefined, { ...UTC_DAY, month: 'short', day: 'numeric' })
                     if (!entry) {
                       return (
                         <span
@@ -154,8 +151,15 @@ export default function SentimentHeatmapGrid({ rows }) {
 
         {grid.length && !hasAnyDaily ? (
           <p className={styles.empty}>
-            No daily sentiment in this range yet. It fills in as the AI insights refresh (every few minutes) and news with
-            dates is scored.
+            No daily sentiment in this range yet. For US stocks, ETFs and crypto, the last 30 days of news fill in within a few
+            minutes of adding an asset, once your Alpaca keys are saved in API Management.
+          </p>
+        ) : null}
+
+        {uncovered.length ? (
+          <p className={styles.heatNote}>
+            <strong>{uncovered.join(', ')}</strong>: Alpaca News only covers US stocks, ETFs and crypto, so {uncovered.length === 1 ? 'this row shows' : 'these rows show'} only
+            the days in the latest AI insight&apos;s news.
           </p>
         ) : null}
 

@@ -19,23 +19,23 @@ export const DCA_INTERVALS = [
 
 export const STRATEGY_RULES = {
   'Trend Following': {
-    buy: `AI says BUY (${MIN_AI_CONFIDENCE}%+ confidence) and the price is up over the last month`,
-    sell: `AI says SELL (${MIN_AI_CONFIDENCE}%+ confidence) and the price is down over the last month`,
+    buy: `AI outlook is Bullish (${MIN_AI_CONFIDENCE}%+ confidence) and the price is up over the last month`,
+    sell: `AI outlook is Bearish (${MIN_AI_CONFIDENCE}%+ confidence) and the price is down over the last month`,
   },
   'Mean Reversion': {
-    buy: `AI says BUY (${MIN_AI_CONFIDENCE}%+) after the price fell ${MEAN_REVERSION_MOVE_PCT}% or more this month`,
-    sell: `AI says SELL (${MIN_AI_CONFIDENCE}%+) after the price rose ${MEAN_REVERSION_MOVE_PCT}% or more this month`,
+    buy: `AI outlook is Bullish (${MIN_AI_CONFIDENCE}%+) after the price fell ${MEAN_REVERSION_MOVE_PCT}% or more this month`,
+    sell: `AI outlook is Bearish (${MIN_AI_CONFIDENCE}%+) after the price rose ${MEAN_REVERSION_MOVE_PCT}% or more this month`,
   },
   'News Momentum': {
     buy: `News sentiment (FinBERT) is +${NEWS_MOMENTUM_SENTIMENT.toFixed(2)} or higher, whatever the AI forecast says`,
     sell: `News sentiment (FinBERT) is −${NEWS_MOMENTUM_SENTIMENT.toFixed(2)} or lower, whatever the AI forecast says`,
   },
   'AI Momentum + Sentiment': {
-    buy: `AI says BUY (${MIN_AI_CONFIDENCE}%+) and news sentiment is positive`,
-    sell: `AI says SELL (${MIN_AI_CONFIDENCE}%+) and news sentiment is negative`,
+    buy: `AI outlook is Bullish (${MIN_AI_CONFIDENCE}%+) and news sentiment is positive`,
+    sell: `AI outlook is Bearish (${MIN_AI_CONFIDENCE}%+) and news sentiment is negative`,
   },
   [DCA_STRATEGY]: {
-    buy: 'on a fixed schedule (Buy Frequency), spending your Max Capital per Trade each time, whatever the AI says',
+    buy: 'on a fixed schedule (Buy Frequency), spending your Max Capital per Trade each time, whatever the AI outlook is',
     sell: 'never on signals, only when an exit you switched on is hit',
   },
 }
@@ -156,7 +156,20 @@ function Collapsible({ title, meta, children, defaultOpen = false }) {
   )
 }
 
+// Approximate width of one "▼ Stop-loss" / price label at the gauge's 11px font.
+const GAUGE_LABEL_PX = 74
+
 function PositionGauge({ asset, position, rule, active, unsaved }) {
+  // Track width, so labels that would overlap on a narrow screen can drop to a second row.
+  const labelsRef = useRef(null)
+  const [trackWidth, setTrackWidth] = useState(0)
+  useEffect(() => {
+    const node = labelsRef.current
+    if (!node || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(([entry]) => setTrackWidth(entry.contentRect.width))
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
   const sl = Number(rule.stopLossPct) || 0
   const tr = Number(rule.trailingStopLossPct) || 0
   const tp = Number(rule.takeProfitPct) || 0
@@ -183,6 +196,13 @@ function PositionGauge({ asset, position, rule, active, unsaved }) {
     { key: 'entry', at: pos(entry), text: 'Entry', price: entry },
     tp > 0 ? { key: 'tp', at: pos(tpPrice), text: '▲ Take-profit', price: tpPrice } : null,
   ].filter(Boolean)
+  // Labels closer than one label width apart alternate between two rows instead of overlapping.
+  const minGapPct = trackWidth > 0 ? (GAUGE_LABEL_PX / trackWidth) * 100 : 0
+  labels.sort((a, b) => a.at - b.at).forEach((label, index) => {
+    const previous = labels[index - 1]
+    label.row = previous && label.at - previous.at < minGapPct ? 1 - previous.row : 0
+  })
+  const twoRows = labels.some((label) => label.row === 1)
 
   const levels = [
     `stop-loss ${sl > 0 ? formatMoney(slPrice) : 'off'}`,
@@ -229,12 +249,12 @@ function PositionGauge({ asset, position, rule, active, unsaved }) {
           </span>
         </span>
       </div>
-      <div className={styles.gaugeLabels}>
+      <div ref={labelsRef} className={styles.gaugeLabels} style={twoRows ? { height: 60 } : undefined}>
         {labels.map((label) => (
           <span
             key={label.key}
             className={label.at < 12 ? styles.gaugeLabelStart : label.at > 88 ? styles.gaugeLabelEnd : ''}
-            style={{ left: `${label.at}%` }}
+            style={{ left: `${label.at}%`, top: label.row ? 30 : 0 }}
           >
             {label.text}<br />{formatMoney(label.price)}
           </span>
@@ -429,7 +449,7 @@ export default function BotBehaviorPreview({ asset, rule, active, unsaved, posit
   const dcaEvery = intervalLabel(rule.dcaIntervalHours || 24)
 
   const buyText = isDca
-    ? `${dcaEvery}: ${dcaAmount} of ${assetName}, whatever the AI says.`
+    ? `${dcaEvery}: ${dcaAmount} of ${assetName}, whatever the AI outlook is.`
     : `when ${STRATEGY_RULES[strategy].buy}.`
   const sellText = isDca
     ? anyExit

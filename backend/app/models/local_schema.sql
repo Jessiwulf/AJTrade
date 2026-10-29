@@ -222,6 +222,62 @@ CREATE INDEX IF NOT EXISTS idx_market_sentiment_symbol_date ON market_sentiment(
 CREATE INDEX IF NOT EXISTS idx_performance_metrics_portfolio_date ON performance_metrics(portfolio_id, metric_date DESC);
 CREATE INDEX IF NOT EXISTS idx_news_cache_owner_symbol_updated ON news_cache(owner, symbol, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_insights_owner_symbol_updated ON insights(owner, symbol, updated_at DESC);
+-- Feature #8: Real-time Notification System (also created at runtime by app/core/notifier.py)
+CREATE TABLE IF NOT EXISTS notification_preferences (
+  owner_id uuid PRIMARY KEY,
+  email text,
+  email_enabled boolean NOT NULL DEFAULT true,
+  discord_enabled boolean NOT NULL DEFAULT false,
+  discord_webhook_enc bytea,           -- AES-256-GCM, bound to owner_id
+  discord_webhook_hint text,           -- masked, safe to display
+  events jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notification_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid NOT NULL,
+  event_key text NOT NULL,             -- de-duplicates alerts per member
+  event_type text NOT NULL,
+  severity text NOT NULL,
+  symbol text,
+  title text NOT NULL,
+  message text NOT NULL,
+  channels jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (owner_id, event_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_log_owner_created ON notification_log(owner_id, created_at DESC);
+
+-- Analytics heatmap: 30 days of Alpaca (Benzinga) news per symbol, scored once by FinBERT.
+-- Public news, shared by all members (see app/core/news_history.py, created at runtime too).
+CREATE TABLE IF NOT EXISTS news_history_articles (
+  symbol text NOT NULL,
+  article_id text NOT NULL,
+  day date NOT NULL,                   -- UTC publish day
+  published_at timestamptz NOT NULL,
+  title text NOT NULL,
+  source text,
+  url text,
+  score real NOT NULL,                 -- FinBERT, -1 .. +1
+  label text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (symbol, article_id)
+);
+
+CREATE INDEX IF NOT EXISTS news_history_articles_symbol_day ON news_history_articles (symbol, day);
+
+-- Days already fetched (including days without news), so each finished day is fetched only once.
+CREATE TABLE IF NOT EXISTS news_history_days (
+  symbol text NOT NULL,
+  day date NOT NULL,
+  fetched_at timestamptz NOT NULL,
+  article_count integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (symbol, day)
+);
+
 CREATE INDEX IF NOT EXISTS idx_alert_events_owner_created ON alert_events(owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trading_rules_owner_asset ON trading_rules(owner_id, asset_symbol);
 CREATE INDEX IF NOT EXISTS idx_bot_logs_owner_time ON bot_execution_logs(owner_id, timestamp DESC);

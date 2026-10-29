@@ -46,6 +46,38 @@ body {
   box-sizing: border-box;
 }
 
+/* --- Mobile compatibility -------------------------------------------------------- */
+html {
+  /* iOS/Android: don't inflate text in landscape. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+img,
+video,
+canvas {
+  max-width: 100%;
+}
+
+/* Taps act immediately (no double-tap-to-zoom delay on buttons and links). */
+a,
+button,
+input,
+select,
+textarea,
+label {
+  touch-action: manipulation;
+}
+
+@media (max-width: 640px) {
+  /* iOS Safari zooms the page when a field under 16px is focused. */
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
 a {
   color: inherit;
   text-decoration: none;

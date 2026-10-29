@@ -19,12 +19,25 @@ export function formatQuantity(value) {
   return n.toLocaleString(undefined, { maximumFractionDigits: 4 })
 }
 
-/** Currency options: 2 decimals normally, up to 4 below $1 so sub-dollar coins keep their price. */
-export function usdOptions(value) {
+// Money on account pages is shown in the active broker's currency: Alpaca accounts and US assets in
+// USD, Settrade accounts and SET stocks in THB. Pages only show the active broker's data, so one
+// currency per page is correct. Set by useBroker() (lib/broker.js) before the page renders values.
+let activeMoneyCurrency = 'USD'
+
+export function setMoneyCurrency(currency) {
+  activeMoneyCurrency = currency === 'THB' ? 'THB' : 'USD'
+}
+
+export function getMoneyCurrency() {
+  return activeMoneyCurrency
+}
+
+/** Currency options: 2 decimals normally, up to 4 below 1 so sub-dollar coins keep their price. */
+export function usdOptions(value, currency = activeMoneyCurrency) {
   const n = Math.abs(Number(value))
   return {
     style: 'currency',
-    currency: 'USD',
+    currency,
     minimumFractionDigits: 2,
     maximumFractionDigits: n > 0 && n < 1 ? 4 : 2,
   }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Tuple
 
 import httpx
@@ -24,15 +25,24 @@ def is_crypto_symbol(symbol: str) -> bool:
     return bool(sep and base.isalnum() and quote in CRYPTO_QUOTE_CURRENCIES)
 
 
+# Share classes: the app uses Yahoo's form (BRK-B), Alpaca uses the exchange form (BRK.B).
+_APP_SHARE_CLASS_RE = re.compile(r"^([A-Z0-9]+)-([A-Z])$")
+_ALPACA_SHARE_CLASS_RE = re.compile(r"^([A-Z0-9]+)\.([A-Z])$")
+
+
 def to_alpaca_symbol(symbol: str) -> str:
     symbol = (symbol or "").strip().upper()
-    return symbol.replace("-", "/") if is_crypto_symbol(symbol) else symbol
+    if is_crypto_symbol(symbol):
+        return symbol.replace("-", "/")
+    return _APP_SHARE_CLASS_RE.sub(r"\1.\2", symbol)
 
 
 def from_alpaca_symbol(symbol: str, asset_class: str | None = None) -> str:
     symbol = (symbol or "").strip().upper()
     if "/" in symbol:
         return symbol.replace("/", "-")
+    if _ALPACA_SHARE_CLASS_RE.match(symbol):
+        return _ALPACA_SHARE_CLASS_RE.sub(r"\1-\2", symbol)
     if str(asset_class or "").lower() == "crypto":
         for quote in CRYPTO_QUOTE_CURRENCIES:
             if symbol.endswith(quote) and len(symbol) > len(quote):

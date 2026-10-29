@@ -75,17 +75,35 @@
   text-overflow: ellipsis;
 }
 
-/* Collapsed: center the icons, hide label gap */
-.sidebarCollapsed .navItem {
-  justify-content: center;
-  padding: 9px;
-  gap: 0;
+.menuButton,
+.drawerHead,
+.drawerBackdrop {
+  display: none;
 }
 
-.sidebarCollapsed .brand {
-  justify-content: center;
-  padding: 8px;
-  flex: none;
+.navPanel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Collapsed (desktop only): center the icons and hide the labels. */
+@media (min-width: 981px) {
+  .sidebarCollapsed .navItem {
+    justify-content: center;
+    padding: 9px;
+    gap: 0;
+  }
+
+  .sidebarCollapsed .brand {
+    justify-content: center;
+    padding: 8px;
+    flex: none;
+  }
+
+  .sidebarCollapsed .navLabel,
+  .sidebarCollapsed .brandText {
+    display: none;
+  }
 }
 
 /* Nav collapse toggle: directly under the menu, set apart by a divider and spacing so it isn't
@@ -154,6 +172,21 @@
 
 .pageBody {
   position: relative;
+}
+
+.legalFooter {
+  margin-top: 28px;
+  padding-top: 14px;
+  border-top: 1px solid var(--aj-border);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--aj-text-muted);
+}
+
+.legalFooter a {
+  color: var(--aj-indigo);
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .pageBodyLocked {
@@ -257,6 +290,33 @@
   gap: 12px;
 }
 
+.providerBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-bg);
+  color: var(--aj-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.providerBadge:hover {
+  text-decoration: none;
+  border-color: var(--aj-border-strong);
+  color: var(--aj-indigo);
+}
+
+.providerCurrency {
+  color: var(--aj-text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .profileButton {
   display: inline-flex;
   align-items: center;
@@ -327,23 +387,149 @@
   font-size: 14px;
 }
 
+/* --- Phones and tablets: sticky top bar + slide-in navigation drawer ----------- */
 @media (max-width: 980px) {
   .shell {
     flex-direction: column;
   }
 
   .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
     width: 100% !important;
+    height: 56px;
+    padding: 0 10px 0 6px !important;
+    flex-direction: row;
+    align-items: center;
+    overflow: visible;
     border-right: 0;
     border-bottom: 1px solid var(--aj-border);
-    padding: 12px 14px;
+    /* Solid, not backdrop-filter: a filter would make the fixed drawer size itself to this bar. */
+    background: var(--aj-bg);
+  }
+
+  .navTop {
+    width: 100%;
+    margin: 0;
+  }
+
+  .navTop .brand {
+    flex: none;
+  }
+
+  .menuButton {
+    display: inline-grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    color: var(--aj-indigo);
+    transition: background 0.15s;
+  }
+
+  .menuButton:hover,
+  .menuButton:focus-visible {
+    background: var(--aj-surface);
+  }
+
+  .navPanel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 60;
+    width: min(300px, 86vw);
+    padding: 10px 14px 24px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--aj-bg);
+    border-right: 1px solid var(--aj-border);
+    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+    transform: translateX(-105%);
+    visibility: hidden;
+    transition: transform 0.25s ease, visibility 0.25s;
+  }
+
+  .navPanelOpen {
+    transform: none;
+    visibility: visible;
+  }
+
+  .drawerHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .drawerHead .brand {
+    flex: none;
+  }
+
+  .drawerBackdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    border: 0;
+    padding: 0;
+    background: rgba(6, 16, 32, 0.45);
+    backdrop-filter: blur(2px);
+    cursor: default;
   }
 
   .nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .navItem {
+    padding: 12px;
+    font-size: 15px;
   }
 
   .navToggleRow {
     display: none;
+  }
+
+  .content {
+    padding: 16px 16px 40px;
+  }
+}
+
+@media (max-width: 640px) {
+  .pageHeader {
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 10px;
+  }
+
+  .pageHeader > div:first-child {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .title {
+    font-size: 20px;
+  }
+
+  .content {
+    padding: 14px 14px 36px;
+  }
+
+  .modalActions {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navPanel {
+    transition: none;
   }
 }

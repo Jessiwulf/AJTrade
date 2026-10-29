@@ -103,8 +103,8 @@ function ForecastArt() {
       <circle className={styles.pulse} style={d(2.3)} cx="404" cy="88" r="16" fill="var(--aj-cta-from)" />
       <circle className={styles.pop} style={d(2.3)} cx="404" cy="88" r="8" fill="var(--aj-cta-to)" />
       <g className={styles.pop} style={d(2.6)}>
-        <rect x="300" y="42" width="96" height="30" rx="15" fill="var(--aj-positive)" />
-        <text x="348" y="62" textAnchor="middle" className={styles.label} fill="#fff">BUY 81%</text>
+        <rect x="286" y="42" width="124" height="30" rx="15" fill="var(--aj-positive)" />
+        <text x="348" y="62" textAnchor="middle" className={styles.label} fill="#fff">Bullish 81%</text>
       </g>
       <Sparkle x={430} y={60} size={10} delay={2.8} />
       <Sparkle x={52} y={40} size={8} delay={1} />
@@ -232,7 +232,7 @@ function ChatArt() {
 
       <g className={styles.pop} style={d(0.2)}>
         <rect x="222" y="58" width="130" height="38" rx="16" fill="var(--aj-cta-from)" />
-        <text x="287" y="82" textAnchor="middle" className={styles.label} fill="var(--aj-ink)">Why SELL?</text>
+        <text x="287" y="82" textAnchor="middle" className={styles.label} fill="var(--aj-ink)">Why Bearish?</text>
       </g>
 
       <g className={styles.typing} style={d(0.9)}>

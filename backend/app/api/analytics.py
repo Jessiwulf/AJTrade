@@ -1,21 +1,22 @@
 """
 Feature #5: Performance Analytics & Market Dashboard API
 Provides endpoints for:
-  - Portfolio performance metrics (P/L, growth, win rate) from the Alpaca paper account
-  - Transaction history (Alpaca fills, see portfolio.sync_trade_history_from_alpaca)
+  - Portfolio performance metrics (P/L, growth, win rate) from the member's active broker
+    (Alpaca or Settrade; see app.core.brokers). The two are never mixed.
+  - Transaction history (broker fills, see portfolio.sync_trade_history)
   - Market sentiment heatmap (from the cached FinBERT news scores)
   - Asset details (price, metrics, news)
 """
 from datetime import datetime, timezone
 import json
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user
 from app.api.market import get_historical_data, get_market_price
-from app.core.alpaca import get_alpaca_account, get_alpaca_portfolio_history, get_alpaca_positions
+from app.core import brokers, news_history, trade_stats
 from app.core.db import get_database
 
 router = APIRouter()
@@ -160,10 +161,12 @@ class PortfolioMetrics(BaseModel):
     total_pl: float
     unrealized_pl: float
     realized_pl: float
-    win_rate: float
+    win_rate: Optional[float]  # None until something has been sold
     total_trades: int
     closed_trades: int
     winning_trades: int
+    losing_trades: int
+    this_month: Dict[str, Any]  # same stats for the sells closed in the current UTC month
     daily_return: float
 
 
@@ -212,19 +215,28 @@ class HoldingPerformanceOut(BaseModel):
     current_price: float
     individual_pl: float
     return_pct: float
+    is_open: bool = True  # False: sold out, listed for its closed-trade record
+    win_rate: Optional[float] = None
+    closed_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    realized_pl: float = 0.0
 
 
 # ========== Internal Helpers ==========
 
-def _alpaca_unavailable(exc: HTTPException) -> HTTPException:
-    detail = str(exc.detail or '')
-    if exc.status_code == status.HTTP_404_NOT_FOUND and 'key not found' in detail.lower():
-        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Alpaca paper account not connected. Add your Alpaca keys in API Management.')
-    return exc
+async def _provider(owner: str, requested: Optional[str]) -> str:
+    return brokers.normalize_provider(requested) if requested else await brokers.get_active_provider(owner)
 
 
-async def _history_rows(db, owner: str):
-    portfolio = await db.fetch_one("SELECT id FROM portfolios WHERE owner = :owner", {"owner": owner})
+async def _provider_portfolio(db, owner: str, provider: str):
+    from app.api.portfolio import _get_owner_portfolio
+
+    return await _get_owner_portfolio(db, owner, provider)
+
+
+async def _history_rows(db, owner: str, provider: str):
+    portfolio = await _provider_portfolio(db, owner, provider)
     if not portfolio:
         return []
     return await db.fetch_all(
@@ -233,43 +245,49 @@ async def _history_rows(db, owner: str):
     )
 
 
-async def calculate_portfolio_metrics(db, owner: str) -> PortfolioMetrics:
-    """Account value, cash, unrealized P/L and today's change straight from Alpaca; realized P/L and win
-    rate from the Alpaca fills in the trade history."""
+async def calculate_portfolio_metrics(db, owner: str, provider: str = brokers.ALPACA) -> PortfolioMetrics:
+    """Account value, cash, unrealized P/L and today's change straight from the provider's broker;
+    realized P/L and win rate from that broker's fills in the trade history."""
     try:
-        account = await get_alpaca_account(owner)
-        positions = await get_alpaca_positions(owner)
+        account = await brokers.get_account(owner, provider)
     except HTTPException as exc:
-        raise _alpaca_unavailable(exc)
+        raise brokers.not_connected(provider, exc)
 
-    equity = _safe_float(account.get('equity') or account.get('portfolio_value'))
+    equity = _safe_float(account.get('equity'))
     last_equity = _safe_float(account.get('last_equity'))
     cash_balance = _safe_float(account.get('cash'))
+    positions = account['positions']
     positions_value = sum(_safe_float(p.get('market_value')) for p in positions)
     unrealized_pl = sum(_safe_float(p.get('unrealized_pl')) for p in positions)
 
-    trades = await _history_rows(db, owner)
-    closed_trades = [t for t in trades if t['trade_type'] == 'SELL' and t['pl'] is not None]
-    realized_pl = sum(float(t['pl']) for t in closed_trades)
+    trades = await _history_rows(db, owner, provider)
     # Win rate: share of closed (SELL) trades that realized a profit. BUYs open positions and can't
     # win or lose on their own, so they are excluded from the denominator.
-    winning_trades = sum(1 for t in closed_trades if float(t['pl']) > 0)
-    win_rate = (winning_trades / len(closed_trades) * 100) if closed_trades else 0
+    closed = trade_stats.closed_trades(trades)
+    overall = trade_stats.summarize(closed)
+    current_month = trade_stats.month_key(datetime.now(timezone.utc))
+    this_month = {
+        'month': current_month,
+        **trade_stats.summarize(t for t in closed if trade_stats.month_key(t['at']) == current_month),
+    }
 
-    # Change since the previous trading day's close (Alpaca's last_equity).
+    # Change since the previous trading day's close (Alpaca's last_equity; for Settrade, the app's
+    # snapshot from the previous day it saw the account).
     daily_return = ((equity - last_equity) / last_equity * 100) if last_equity > 0 else 0
 
     return PortfolioMetrics(
         total_value=equity,
         cash_balance=cash_balance,
         positions_value=positions_value,
-        total_pl=realized_pl + unrealized_pl,
+        total_pl=overall['realized_pl'] + unrealized_pl,
         unrealized_pl=unrealized_pl,
-        realized_pl=realized_pl,
-        win_rate=win_rate,
+        realized_pl=overall['realized_pl'],
+        win_rate=overall['win_rate'],
         total_trades=len(trades),
-        closed_trades=len(closed_trades),
-        winning_trades=winning_trades,
+        closed_trades=overall['closed_trades'],
+        winning_trades=overall['winning_trades'],
+        losing_trades=overall['losing_trades'],
+        this_month=this_month,
         daily_return=daily_return,
     )
 
@@ -277,67 +295,52 @@ async def calculate_portfolio_metrics(db, owner: str) -> PortfolioMetrics:
 # ========== API Endpoints ==========
 
 @router.get('/portfolio/metrics')
-async def get_portfolio_metrics(user=Depends(get_current_user)):
-    """Current portfolio metrics from the Alpaca paper account."""
+async def get_portfolio_metrics(provider: Optional[str] = Query(default=None), user=Depends(get_current_user)):
+    """Current portfolio metrics from the active provider's account."""
     owner = user.get('sub')
     if not owner:
         raise HTTPException(status_code=400, detail='Invalid user')
     try:
-        metrics = await calculate_portfolio_metrics(get_database(), owner)
-        return metrics.dict()
+        provider = await _provider(owner, provider)
+        metrics = await calculate_portfolio_metrics(get_database(), owner, provider)
+        return {**metrics.dict(), 'provider': provider, 'currency': brokers.PROVIDER_INFO[provider]['currency']}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-_HISTORY_PERIODS = ((7, '1W'), (31, '1M'), (93, '3M'), (186, '6M'))
-
-
 @router.get('/portfolio/history')
-async def get_portfolio_history(days: int = 30, user=Depends(get_current_user)):
-    """Daily account value from Alpaca's portfolio history. Days before the account had any value are
-    left out; with no history the list is empty (nothing is made up)."""
+async def get_portfolio_history(days: int = 30, provider: Optional[str] = Query(default=None), user=Depends(get_current_user)):
+    """Daily account value: Alpaca's portfolio history, or for Settrade the daily snapshots AJTrade has
+    recorded since the account was connected. Nothing is made up for days without data."""
     owner = user.get('sub')
     if not owner:
         raise HTTPException(status_code=400, detail='Invalid user')
-    period = next((p for limit, p in _HISTORY_PERIODS if days <= limit), '1A')
+    provider = await _provider(owner, provider)
     try:
-        history = await get_alpaca_portfolio_history(owner, period=period, timeframe='1D')
+        history = await brokers.get_equity_history(owner, provider, days)
     except HTTPException as exc:
-        raise _alpaca_unavailable(exc)
+        raise brokers.not_connected(provider, exc)
 
-    timestamps = history.get('timestamp') or []
-    equity = history.get('equity') or []
-    base_value = _safe_float(history.get('base_value'))
-    rows = []
-    for ts, value in zip(timestamps, equity):
-        value = _safe_float(value, None)
-        if value is None or value <= 0:
-            continue
-        rows.append(
-            PerformanceHistory(
-                date=datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat(),
-                total_value=value,
-                total_pl=value - base_value if base_value > 0 else 0.0,
-            ).dict()
-        )
-    return rows
+    base_value = history[0]['equity'] if history else 0.0
+    return [
+        PerformanceHistory(date=point['date'], total_value=point['equity'], total_pl=point['equity'] - base_value).dict()
+        for point in history
+    ]
 
 
 @router.get('/transactions')
-async def get_transactions(limit: int = 100, symbol: Optional[str] = None, user=Depends(get_current_user)):
-    """Get transaction history for portfolio"""
+async def get_transactions(limit: int = 100, symbol: Optional[str] = None, provider: Optional[str] = Query(default=None), user=Depends(get_current_user)):
+    """Transaction history of the active provider's portfolio."""
     try:
         db = get_database()
         owner = user.get('sub')
         if not owner:
             raise HTTPException(status_code=400, detail='Invalid user')
 
-        portfolio = await db.fetch_one(
-            "SELECT id FROM portfolios WHERE owner = :owner",
-            {"owner": owner}
-        )
+        provider = await _provider(owner, provider)
+        portfolio = await _provider_portfolio(db, owner, provider)
         if not portfolio:
             return []
 
@@ -379,7 +382,7 @@ async def get_transactions(limit: int = 100, symbol: Optional[str] = None, user=
 
 
 @router.get('/sentiment-heatmap')
-async def get_sentiment_heatmap(user=Depends(get_current_user)):
+async def get_sentiment_heatmap(provider: Optional[str] = Query(default=None), user=Depends(get_current_user)):
     """Sentiment for each watchlist asset from the cached FinBERT news scores. Assets without scored news
     are returned with avg_sentiment = null ("No data") instead of a made-up neutral score."""
     try:
@@ -392,14 +395,38 @@ async def get_sentiment_heatmap(user=Depends(get_current_user)):
             "SELECT symbol FROM watchlists WHERE owner = :owner",
             {"owner": owner}
         )
+        provider = await _provider(owner, provider)
+        symbols = await brokers.filter_symbols([str(item['symbol']).upper() for item in watchlist], provider)
+
+        # 30 days of saved Alpaca news sentiment (US stocks, ETFs, crypto), filled by the scheduler.
+        covered = symbols if provider == brokers.ALPACA else []
+        try:
+            history = await news_history.daily_history(covered)
+        except Exception:
+            history = {}
 
         with_data = []
         without_data = []
-        for item in watchlist:
-            symbol = str(item['symbol']).upper()
+        now = datetime.now(timezone.utc)
+        for symbol in symbols:
             cached_sentiment = await _sentiment_from_cache(db, owner, symbol)
+            saved_daily = history.get(symbol) or []
+            coverage = 'alpaca' if symbol in covered and news_history.news_symbol(symbol) else None
             if cached_sentiment:
+                cached_sentiment['daily'] = news_history.merge_daily(cached_sentiment.get('daily') or [], saved_daily)
+                cached_sentiment['news_coverage'] = coverage
                 with_data.append(cached_sentiment)
+                continue
+            recent = news_history.recent_average(saved_daily, now=now)
+            if recent:
+                # No AI insight yet: the tile shows the last 7 days of saved news.
+                with_data.append({
+                    'symbol': symbol,
+                    **recent,
+                    'heatmap_label': _sentiment_label_from_score(recent['avg_sentiment']),
+                    'daily': saved_daily,
+                    'news_coverage': coverage,
+                })
             else:
                 without_data.append({
                     "symbol": symbol,
@@ -410,7 +437,8 @@ async def get_sentiment_heatmap(user=Depends(get_current_user)):
                     "neutral_count": 0,
                     "total_articles": 0,
                     "date": None,
-                    "daily": [],
+                    "daily": saved_daily,
+                    "news_coverage": coverage,
                 })
 
         with_data.sort(key=lambda x: x['avg_sentiment'], reverse=True)
@@ -423,20 +451,29 @@ async def get_sentiment_heatmap(user=Depends(get_current_user)):
 
 
 @router.get('/holdings', response_model=List[HoldingPerformanceOut])
-async def get_holdings_performance(user=Depends(get_current_user)):
-    """Per-asset performance straight from the Alpaca paper account's positions."""
+async def get_holdings_performance(provider: Optional[str] = Query(default=None), user=Depends(get_current_user)):
+    """Per-asset performance straight from the active provider's positions, with each asset's win rate
+    from its closed trades. Assets that were sold out are listed too (is_open = False)."""
     owner = user.get('sub')
     if not owner:
         raise HTTPException(status_code=400, detail='Invalid user')
+    provider = await _provider(owner, provider)
     try:
-        positions = await get_alpaca_positions(owner)
+        positions = await brokers.get_positions(owner, provider)
     except HTTPException as exc:
-        raise _alpaca_unavailable(exc)
+        raise brokers.not_connected(provider, exc)
+
+    db = get_database()
+    per_symbol = trade_stats.by_symbol(trade_stats.closed_trades(await _history_rows(db, owner, provider)))
 
     output: List[HoldingPerformanceOut] = []
     for position in positions:
         symbol = str(position.get('symbol') or '').upper()
         if not symbol:
+            continue
+        # Crypto sells can leave dust behind (e.g. 0.000000002 SOL): worth under a cent, so the
+        # position counts as closed rather than as a $0.00 holding.
+        if abs(_safe_float(position.get('market_value'))) < 0.01:
             continue
         output.append(
             HoldingPerformanceOut(
@@ -446,9 +483,17 @@ async def get_holdings_performance(user=Depends(get_current_user)):
                 current_price=_safe_float(position.get('current_price')),
                 individual_pl=_safe_float(position.get('unrealized_pl')),
                 return_pct=_safe_float(position.get('unrealized_plpc')) * 100.0,
+                **per_symbol.pop(symbol, {}),
             )
         )
-    return sorted(output, key=lambda row: row.asset_symbol)
+    for symbol, stats in per_symbol.items():
+        output.append(
+            HoldingPerformanceOut(
+                asset_symbol=symbol, quantity=0, avg_buy_price=0, current_price=0, individual_pl=0, return_pct=0,
+                is_open=False, **stats,
+            )
+        )
+    return sorted(output, key=lambda row: (not row.is_open, row.asset_symbol))
 
 
 @router.get('/asset/{symbol}')

@@ -691,8 +691,9 @@ export default function Home() {
               Created by Jirapat Sereerat &amp; Atiwit Tin Intasarn | Advisor: Asst.Prof. Tisinee Surapunt
             </p>
             <p className={styles.disclaimer}>
-              AJTrade is an academic thesis project. Nothing on this site is financial advice. Trading involves risk,
-              including possible loss of principal.
+              AJTrade is an academic thesis project. Nothing on this site is financial advice: AI outlooks are statistical
+              forecasts, not a recommendation to buy or sell any asset. Trading involves risk, including possible loss of
+              principal. <Link href="/privacy">Privacy Notice</Link>
             </p>
           </div>
         </div>

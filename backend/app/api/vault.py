@@ -181,19 +181,11 @@ async def ping_key(payload: PingIn, user=Depends(get_current_user)):
         }
 
     if service == 'settrade':
-        # Settrade uses an App Id / App Secret pair. We only validate that both are present in the Vault.
-        app_id = await _get_service_key('settrade_app_id')
-        app_secret = await _get_service_key('settrade_app_secret')
+        # Real check: logs in to Settrade Open API and, when an account number is saved, reads the account.
+        from app.core.settrade import test_connection
 
-        if not app_id or not app_secret:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Settrade App Id / App Secret not found in vault')
-
-        return {
-            "status": "ok",
-            "service": "settrade",
-            "has_app_id": True,
-            "has_app_secret": True,
-        }
+        result = await test_connection(owner)
+        return {"status": "ok", "service": "settrade", **result}
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,

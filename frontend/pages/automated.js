@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import AppShell from '../components/AppShell'
 import BotBehaviorPreview, { DCA_INTERVALS, DCA_STRATEGY, STRATEGY_RULES } from '../components/BotBehaviorPreview'
+import InfoTip from '../components/InfoTip'
 import { apiFetch } from '../lib/api'
+import { symbolProvider, useBroker } from '../lib/broker'
 import { takeAutoConfig } from '../lib/autoConfig'
 import { usdOptions } from '../lib/format'
 import styles from '../styles/Automated.module.css'
@@ -33,11 +35,11 @@ const DEFAULT_RULESET = {
 const STRATEGIES = ['Trend Following', 'Mean Reversion', 'News Momentum', 'AI Momentum + Sentiment', DCA_STRATEGY]
 
 const STRATEGY_INFO = {
-  'Trend Following': 'Follows the AI signal only when it agrees with the 1-month price trend.',
-  'Mean Reversion': 'Buys dips and sells spikes: follows the AI signal only after a sharp move the other way.',
+  'Trend Following': 'Follows the AI outlook only when it agrees with the 1-month price trend.',
+  'Mean Reversion': 'Buys dips and sells spikes: follows the AI outlook only after a sharp move the other way.',
   'News Momentum': 'Trades on the news alone, using FinBERT sentiment instead of the AI price forecast.',
-  'AI Momentum + Sentiment': 'Follows the AI signal only when news sentiment points the same way.',
-  [DCA_STRATEGY]: 'For long-term saving: buys a fixed amount on a schedule and ignores AI signals. Pair it with exits turned off.',
+  'AI Momentum + Sentiment': 'Follows the AI outlook only when news sentiment points the same way.',
+  [DCA_STRATEGY]: 'For long-term saving: buys a fixed amount on a schedule and ignores the AI outlook. Pair it with exits turned off.',
 }
 
 // The slider covers the everyday range precisely; typing allows up to `max` for long-term holders.
@@ -56,24 +58,11 @@ const RISK_INFO = {
   maxDailyLoss: 'Once today’s realised losses reach this amount, the bot stops opening new trades until the next day.',
 }
 
-function InfoTip({ id, label, children, wide = false }) {
-  return (
-    <span className={styles.infoTip}>
-      <button type="button" className={styles.infoBtn} aria-label={`About ${label}`} aria-describedby={id}>
-        i
-      </button>
-      <span role="tooltip" id={id} className={`${styles.tooltip} ${wide ? styles.tooltipWide : ''}`}>
-        {children}
-      </span>
-    </span>
-  )
-}
-
 function FieldLabel({ tipId, children, tip, wideTip = false }) {
   return (
     <div className={styles.labelRow}>
       <div className={styles.label}>{children}</div>
-      <InfoTip id={tipId} label={children} wide={wideTip}>
+      <InfoTip label={children} wide={wideTip}>
         {tip}
       </InfoTip>
     </div>
@@ -263,6 +252,10 @@ function rulesDiffer(draft, saved) {
 const SELECTED_ASSET_KEY = 'ajtrade.automated.selectedAsset'
 
 export default function Automated() {
+  // The bot page shows the active broker's assets only; each asset's orders go to the broker that lists it.
+  const { provider, meta } = useBroker()
+  const isSettrade = provider === 'settrade'
+  const venue = isSettrade ? 'Settrade sandbox' : 'Alpaca paper'
   const [tab, setTab] = useState(TABS.POSITIONS)
   const [saveState, setSaveState] = useState('idle')
   // Which asset is being viewed. Kept apart from the rules draft so switching assets is not an edit,
@@ -286,8 +279,11 @@ export default function Automated() {
   })
 
   const watchlistSymbols = useMemo(
-    () => (Array.isArray(watchlistData) ? watchlistData : []).map((item) => String(item.symbol || '').toUpperCase()).filter(Boolean),
-    [watchlistData],
+    () => (Array.isArray(watchlistData) ? watchlistData : [])
+      .filter((item) => symbolProvider(item.symbol, item.provider) === provider)
+      .map((item) => String(item.symbol || '').toUpperCase())
+      .filter(Boolean),
+    [watchlistData, provider],
   )
 
   const { data, error: rulesError, mutate, isLoading } = useSWR('bot-rules', fetchBotRules, {
@@ -364,14 +360,19 @@ export default function Automated() {
     }
   }
 
+  const knownProviders = useMemo(
+    () => new Map((Array.isArray(watchlistData) ? watchlistData : []).map((item) => [String(item.symbol || '').toUpperCase(), item.provider])),
+    [watchlistData],
+  )
+  const belongsToProvider = (symbol) => symbolProvider(symbol, knownProviders.get(String(symbol || '').toUpperCase())) === provider
   const pickedIsValid = pickedAsset
     && pickedAsset !== DEFAULT_ASSET
-    && (!watchlistSymbols.length || watchlistSymbols.includes(pickedAsset) || Boolean(rules.assetRules?.[pickedAsset]))
-  const selectedAsset = pickedIsValid
-    ? pickedAsset
-    : (rules.selectedAsset && rules.selectedAsset !== DEFAULT_ASSET
-      ? rules.selectedAsset
-      : (watchlistSymbols[0] || DEFAULT_ASSET))
+    && belongsToProvider(pickedAsset)
+    && (watchlistSymbols.includes(pickedAsset) || Boolean(rules.assetRules?.[pickedAsset]))
+  const savedAsset = rules.selectedAsset && rules.selectedAsset !== DEFAULT_ASSET && belongsToProvider(rules.selectedAsset)
+    ? rules.selectedAsset
+    : null
+  const selectedAsset = pickedIsValid ? pickedAsset : (savedAsset || watchlistSymbols[0] || DEFAULT_ASSET)
 
   const assetRule = useMemo(() => ensureAssetRule(draftRules, selectedAsset), [draftRules, selectedAsset])
 
@@ -384,13 +385,13 @@ export default function Automated() {
   }, [watchlistSymbols, selectedAsset])
 
   const activePositions = useMemo(
-    () => (rules.activePositions || []).filter((position) => selectedAsset === DEFAULT_ASSET || position.asset === selectedAsset),
-    [rules, selectedAsset],
+    () => (rules.activePositions || []).filter((position) => belongsToProvider(position.asset) && (selectedAsset === DEFAULT_ASSET || position.asset === selectedAsset)),
+    [rules, selectedAsset, provider, knownProviders],
   )
 
   const executionLogs = useMemo(
-    () => (rules.executionLogs || []).filter((log) => selectedAsset === DEFAULT_ASSET || log.asset === selectedAsset),
-    [rules, selectedAsset],
+    () => (rules.executionLogs || []).filter((log) => belongsToProvider(log.asset) && (selectedAsset === DEFAULT_ASSET || log.asset === selectedAsset)),
+    [rules, selectedAsset, provider, knownProviders],
   )
 
   async function saveRules(nextRules, { recordHistory = true } = {}) {
@@ -517,10 +518,10 @@ export default function Automated() {
 
       if (result?.action_taken === 'Executed') {
         setRunState('ok')
-        setRunMessage(`${normalizedSide} filled on Alpaca paper for ${selectedAsset} at ${formatCurrency(result?.execution_price)}.`)
+        setRunMessage(`${normalizedSide} filled on ${venue} for ${selectedAsset} at ${formatCurrency(result?.execution_price)}.`)
       } else if (result?.action_taken === 'Pending') {
         setRunState('ok')
-        setRunMessage(`${normalizedSide} order for ${selectedAsset} sent to Alpaca and waiting to fill (e.g. market closed). The bot books it once Alpaca fills it.`)
+        setRunMessage(`${normalizedSide} order for ${selectedAsset} sent to ${meta.label} and waiting to fill (e.g. market closed). The bot books it once ${meta.label} fills it.`)
       } else {
         setRunState('error')
         setRunMessage(result?.reason || `${normalizedSide} rejected by risk controls. Check Execution Audit Logs for details.`)
@@ -605,7 +606,7 @@ export default function Automated() {
                   <div>
                     <div className={styles.k}>Execution Mode (all assets)</div>
                     <div className={styles.v}>
-                      {draftRules.executionMode === 'live' ? 'Live (not enabled, switch off)' : 'Alpaca Paper Trading'}
+                      {draftRules.executionMode === 'live' ? 'Live (not enabled, switch off)' : isSettrade ? 'Settrade Sandbox Trading' : 'Alpaca Paper Trading'}
                     </div>
                   </div>
                   {/* Bot orders go to the Alpaca paper account; live (real-money) trading is not wired up,
@@ -615,8 +616,10 @@ export default function Automated() {
                     className={`${styles.switch} ${draftRules.executionMode === 'live' ? styles.switchOn : ''}`}
                     onClick={() => updateRoot('executionMode', 'paper')}
                     disabled={draftRules.executionMode !== 'live'}
-                    title="Orders are placed on your Alpaca paper account. Live trading is not enabled."
-                    aria-label="Execution mode: Alpaca paper trading"
+                    title={isSettrade
+                      ? 'Orders are placed on your Settrade sandbox account in board lots of 100 shares. Live trading is not enabled.'
+                      : 'Orders are placed on your Alpaca paper account. Live trading is not enabled.'}
+                    aria-label={`Execution mode: ${venue} trading`}
                     aria-pressed={draftRules.executionMode === 'live'}
                   >
                     <span className={styles.knob} />
@@ -677,7 +680,7 @@ export default function Automated() {
               <div className={styles.field}>
                 <FieldLabel
                   tipId="tip-dca-interval"
-                  tip="How often the bot buys. Each buy spends your Max Capital Allocation per Trade, whatever the AI signals say."
+                  tip="How often the bot buys. Each buy spends your Max Capital Allocation per Trade, whatever the AI outlook is."
                 >
                   Buy Frequency
                 </FieldLabel>

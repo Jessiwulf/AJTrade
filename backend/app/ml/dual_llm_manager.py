@@ -66,6 +66,12 @@ class DualLLMManager:
             "- NEVER invent prices, dates, calculations, or market events. Use ONLY the exact numbers provided in the BACKGROUND_DATA.\n"
             "- You MUST use the exact injected metrics for Live Price, Daily Change, Volume, FinBERT Sentiment Score, and LightGBM Signal when answering asset questions.\n"
             "- Do not give guaranteed financial advice.\n\n"
+            "=== 2b. NO INVESTMENT ADVICE (LEGAL) ===\n"
+            "- NEVER tell the user to buy, sell or hold any asset, and never say what they should do with their money or positions. "
+            "Giving the public buy/sell advice requires an investment-advisor licence.\n"
+            "- Describe the model only as an outlook: Bullish (expects a rise), Bearish (expects a fall) or Neutral, with its confidence. "
+            "Explain the drivers and risks, and leave the decision to the user.\n"
+            "- If the user asks whether to buy or sell, say you cannot give investment advice, then explain the outlook and its risks.\n\n"
             "=== 3. STRICT FORMATTING ===\n"
             "- ALWAYS use double newlines (\\n\\n) to separate paragraphs.\n"
             "- If making a list, use a simple dash (-) and force a double newline (\\n\\n) after each item.\n"
@@ -101,9 +107,11 @@ class DualLLMManager:
             or sentiment_obj.get('avg_sentiment')
             or shap_context.get('sentiment_score')
         )
+        # The outlook word (Bullish/Bearish/Neutral), never the internal BUY/SELL code.
         lightgbm_signal = (
-            shap_context.get('signal')
-            or shap_context.get('recommendation')
+            shap_context.get('recommendation')
+            or {'BUY': 'Bullish', 'SELL': 'Bearish', 'HOLD': 'Neutral'}.get(str(shap_context.get('signal') or '').upper())
+            or shap_context.get('signal')
             or shap_context.get('outlook')
             or 'Not provided'
         )

@@ -6,10 +6,12 @@ import AppShell from '../components/AppShell'
 import InfoTip from '../components/InfoTip'
 import { STRATEGY_RULES } from '../components/BotBehaviorPreview'
 import { storeAutoConfig, suggestBotConfig } from '../lib/autoConfig'
+import { useBroker, useProviderSymbols } from '../lib/broker'
 import { unitWord, usdOptions } from '../lib/format'
+import { NOT_ADVICE, outlookLabel } from '../lib/outlook'
 import styles from '../styles/Insights.module.css'
 
-// The bot only acts on AI signals at or above this confidence (see backend BOT_MIN_SIGNAL_CONFIDENCE).
+// The bot only acts on a Bullish/Bearish outlook at or above this confidence (see backend BOT_MIN_SIGNAL_CONFIDENCE).
 const BOT_MIN_CONFIDENCE = 70
 
 const TIPS = {
@@ -19,14 +21,15 @@ const TIPS = {
       <span>1. A <strong>LightGBM</strong> model is trained on the asset&apos;s last ~180 trading days of prices plus <strong>FinBERT</strong> news sentiment.</span>
       <span>2. It predicts the probability that the <strong>next trading day closes higher</strong> than today (&quot;up probability&quot;).</span>
       <span>3. <strong>SHAP</strong> shows which inputs pushed that prediction up or down.</span>
-      <span>This is a statistical signal, not financial advice.</span>
+      <span>{NOT_ADVICE}</span>
     </>
   ),
   signal: (
     <>
-      <span><strong>Confidence</strong> = how sure the model is of its side: <code>max(up probability, 1 − up probability) × 100</code>. 50% is a coin flip.</span>
-      <span><strong>Up probability</strong> = the model&apos;s chance that the next trading day closes higher. The bar shows it against the SELL and BUY lines; in between is HOLD.</span>
-      <span>The trading bot only acts on BUY/SELL signals with <strong>{BOT_MIN_CONFIDENCE}%+</strong> confidence.</span>
+      <span><strong>Outlook</strong>: <strong>Bullish</strong> = the model expects the price to rise, <strong>Bearish</strong> = to fall, <strong>Neutral</strong> = no clear direction. It is a forecast, not a recommendation to trade.</span>
+      <span><strong>Confidence</strong> = how sure the model is of its direction: <code>max(up probability, 1 − up probability) × 100</code>. 50% is a coin flip.</span>
+      <span><strong>Up probability</strong> = the model&apos;s chance that the next trading day closes higher. The bar shows it against the Bearish and Bullish lines; in between is Neutral.</span>
+      <span>Your trading bot only acts on a Bullish or Bearish outlook with <strong>{BOT_MIN_CONFIDENCE}%+</strong> confidence, following the rules you set.</span>
       <span><strong>Automate</strong> opens the Automated page with this asset set up as shown below. Nothing is saved until you press <strong>Save Rules</strong> there.</span>
     </>
   ),
@@ -99,7 +102,7 @@ const SPARK_H = 80
 function Sparkline({ points }) {
   const [active, setActive] = useState(null)
   const data = (points || [])
-    .map((p) => ({ date: p.date, close: Number(p.close) }))
+    .map((p) => ({ date: p.date, close: p.close == null || p.close === '' ? NaN : Number(p.close) }))
     .filter((p) => Number.isFinite(p.close))
   if (data.length < 2) return <p className={styles.muted}>Price history appears after the next AI refresh.</p>
 
@@ -228,15 +231,15 @@ function ProbabilityGauge({ probability, thresholds }) {
   return (
     <div className={styles.gauge}>
       <div className={styles.gaugeTrack} role="img"
-        aria-label={`Up probability ${Number.isFinite(p) ? p.toFixed(0) : 'unknown'}%. SELL at or below ${sell.toFixed(0)}%, BUY at or above ${buy.toFixed(0)}%.`}>
+        aria-label={`Up probability ${Number.isFinite(p) ? p.toFixed(0) : 'unknown'}%. Bearish at or below ${sell.toFixed(0)}%, Bullish at or above ${buy.toFixed(0)}%.`}>
         <span className={styles.gaugeSell} style={{ width: `${sell}%` }} />
         <span className={styles.gaugeBuy} style={{ left: `${buy}%`, width: `${100 - buy}%` }} />
         {Number.isFinite(p) ? <span className={styles.gaugeMarker} style={{ left: `${p}%` }} /> : null}
       </div>
       <div className={styles.gaugeScale}>
-        <span>SELL ≤ {sell.toFixed(0)}%</span>
-        <span>HOLD</span>
-        <span>BUY ≥ {buy.toFixed(0)}%</span>
+        <span>Bearish ≤ {sell.toFixed(0)}%</span>
+        <span>Neutral</span>
+        <span>Bullish ≥ {buy.toFixed(0)}%</span>
       </div>
     </div>
   )
@@ -244,9 +247,9 @@ function ProbabilityGauge({ probability, thresholds }) {
 
 // One-line strategy summaries for the Automate panel (full rules are in its tooltip).
 const STRATEGY_SUMMARY = {
-  'Trend Following': 'Rides the trend: buys when the price is rising and the AI says BUY, sells when it is falling and the AI says SELL.',
-  'Mean Reversion': 'Bets the price bounces back: buys after it drops 3% or more, sells after it jumps 3% or more, but only when the AI agrees.',
-  'News Momentum': 'Follows the headlines: buys on very good news, sells on very bad news, whatever the AI says.',
+  'Trend Following': 'Rides the trend: buys when the price is rising and the AI outlook is Bullish, sells when it is falling and the outlook is Bearish.',
+  'Mean Reversion': 'Bets the price bounces back: buys after it drops 3% or more, sells after it jumps 3% or more, but only when the AI outlook agrees.',
+  'News Momentum': 'Follows the headlines: buys on very good news, sells on very bad news, whatever the AI outlook is.',
   'AI Momentum + Sentiment': 'Only trades when the AI and the news point the same way.',
 }
 
@@ -315,7 +318,7 @@ function InsightCard({ item, onAutomate }) {
       ? 'Strong enough for the bot to act.'
       : fallback
         ? 'The bot skips rule-based estimates.'
-        : `The bot waits: needs a BUY/SELL at ${BOT_MIN_CONFIDENCE}%+ confidence.`,
+        : `The bot waits: needs a Bullish or Bearish outlook at ${BOT_MIN_CONFIDENCE}%+ confidence.`,
   }
   const updated = timeAgo(item.generated_at)
   const newsLabel = unavailable ? null : sentimentLabel(item.latest_sentiment_score)
@@ -346,7 +349,7 @@ function InsightCard({ item, onAutomate }) {
 
         <div className={styles.panel}>
           <p className={styles.label}>
-            {unavailable ? 'Model drivers' : `Why the model says ${signal}`}
+            {unavailable ? 'Model drivers' : `Why the outlook is ${outlookLabel(signal)}`}
             <InfoTip label="Top drivers">{TIPS.drivers}</InfoTip>
           </p>
           <Drivers drivers={item.drivers} fallback={fallback || unavailable} />
@@ -354,12 +357,12 @@ function InsightCard({ item, onAutomate }) {
 
         <div className={`${styles.verdict} ${verdictTone}`}>
           <p className={styles.label}>
-            {fallback ? 'Rule-based estimate' : 'AI signal'}
-            <InfoTip label="AI signal" align="end">{TIPS.signal}</InfoTip>
+            {fallback ? 'Rule-based estimate' : 'AI outlook'}
+            <InfoTip label="AI outlook" align="end">{TIPS.signal}</InfoTip>
           </p>
           <p className={styles.scoreLine}>
             {confidence != null ? <span className={styles.scoreValue}>{confidence}%</span> : null}
-            <span className={`${styles.scoreSignal} ${signalTone(signal)}`}>{unavailable ? 'N/A' : signal}</span>
+            <span className={`${styles.scoreSignal} ${signalTone(signal)}`}>{unavailable ? 'N/A' : outlookLabel(signal)}</span>
           </p>
           {probUp != null ? (
             <>
@@ -417,7 +420,10 @@ function InsightCard({ item, onAutomate }) {
 export default function Insights() {
   const router = useRouter()
   const { data, error, isLoading } = useSWR('/api/ml/v2/watchlist/insights')
-  const items = Array.isArray(data) ? data : []
+  // Only the active broker's assets (Alpaca: US stocks & crypto, Settrade: Thai SET stocks).
+  const { provider } = useBroker()
+  const { belongs } = useProviderSymbols(provider)
+  const items = (Array.isArray(data) ? data : []).filter((it) => belongs(it.symbol))
   const loading = isLoading && !items.length
   const errorMessage = error?.message || ''
   const counts = items.reduce((acc, it) => {
@@ -432,7 +438,7 @@ export default function Insights() {
   }
 
   return (
-    <AppShell title="AI Insights" subtitle="Sentiment & recommendations">
+    <AppShell title="AI Insights" subtitle="Sentiment & AI market outlook">
       <div className={styles.list}>
         {items.length ? (
           <div className={styles.summaryBar}>
@@ -440,11 +446,12 @@ export default function Insights() {
               {items.length} asset{items.length === 1 ? '' : 's'} analysed
               <InfoTip label="How AI insights work">{TIPS.page}</InfoTip>
             </span>
-            <span className={`${styles.countChip} ${styles.chipUp}`}>{counts.BUY || 0} BUY</span>
-            <span className={`${styles.countChip} ${styles.chipDown}`}>{counts.SELL || 0} SELL</span>
-            <span className={styles.countChip}>{counts.HOLD || 0} HOLD</span>
+            <span className={`${styles.countChip} ${styles.chipUp}`}>{counts.BUY || 0} Bullish</span>
+            <span className={`${styles.countChip} ${styles.chipDown}`}>{counts.SELL || 0} Bearish</span>
+            <span className={styles.countChip}>{counts.HOLD || 0} Neutral</span>
           </div>
         ) : null}
+        {items.length ? <p className={styles.disclaimer}>{NOT_ADVICE} Trading involves risk, including loss of capital.</p> : null}
         {loading ? <section className={styles.emptyState}>Loading live watchlist insights...</section> : null}
         {!loading && errorMessage ? <section className={styles.emptyState}>Error: {errorMessage}</section> : null}
         {!loading && !errorMessage && !items.length ? (

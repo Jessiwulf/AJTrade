@@ -179,4 +179,11 @@ try:
 except Exception as e:
     logger.warning("Trading bot router not loaded: %s", e)
 
+try:
+    from app.api import notifications as notifications_router
+
+    app.include_router(notifications_router.router, prefix='/api/notifications')
+except Exception as e:
+    logger.warning("Notifications router not loaded: %s", e)
+
 

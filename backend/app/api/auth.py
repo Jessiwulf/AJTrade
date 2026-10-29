@@ -248,4 +248,11 @@ async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
 
 @router.get('/me')
 async def me(user=Depends(get_current_user)):
+    # Email is the default alert channel; keep the member's address on file for background alerts.
+    try:
+        from app.core.notifier import remember_member_email
+
+        await remember_member_email(str(user.get('sub') or ''), user.get('email'))
+    except Exception as exc:
+        logger.warning("notify_email_sync_failed: %s", exc)
     return {'user': user, 'profile': _profile_defaults(user)}

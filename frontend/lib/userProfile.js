@@ -18,6 +18,8 @@ export function loadStoredProfile(user) {
   }
 }
 
+export const PROFILE_UPDATED_EVENT = 'ajtrade:profile-updated'
+
 export function saveStoredProfile(user, profile) {
   if (typeof window === 'undefined') return
   try {
@@ -25,6 +27,8 @@ export function saveStoredProfile(user, profile) {
   } catch {
     // ignore
   }
+  // Lets the header avatar update immediately instead of on the next page load.
+  window.dispatchEvent(new CustomEvent(PROFILE_UPDATED_EVENT, { detail: profile || {} }))
 }
 
 export function clearStoredProfile(user) {

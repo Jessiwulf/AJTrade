@@ -94,6 +94,18 @@
   margin-top: 12px;
 }
 
+.notice {
+  margin: 0;
+  color: var(--aj-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.notice a {
+  color: var(--aj-indigo);
+  font-weight: 700;
+}
+
 .links {
   margin-top: 14px;
   display: flex;

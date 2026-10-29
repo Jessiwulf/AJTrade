@@ -29,6 +29,13 @@
   box-shadow: var(--aj-shadow-sm);
 }
 
+.disclaimer {
+  margin: -4px 2px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--aj-text-muted);
+}
+
 .summaryTitle {
   display: inline-flex;
   align-items: center;

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/router'
 import AJLogo from './AJLogo'
 import { apiFetch, setAccessToken } from '../lib/api'
 import { loadStoredProfile } from '../lib/userProfile'
@@ -8,6 +9,22 @@ import styles from './TopNav.module.css'
 export default function TopNav() {
   const [isAuthed, setIsAuthed] = useState(false)
   const [profile, setProfile] = useState(null)
+  // Small screens: the links move into a menu opened from the bar.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const router = useRouter()
+
+  useEffect(() => {
+    setMenuOpen(false)
+  }, [router?.asPath])
+
+  useEffect(() => {
+    if (!menuOpen) return undefined
+    function onKeyDown(event) {
+      if (event.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [menuOpen])
 
   function getInitials(value) {
     const text = String(value || '').trim()
@@ -52,7 +69,7 @@ export default function TopNav() {
           <span className={styles.brandText}>AJTrade</span>
         </Link>
 
-        <nav className={styles.links} aria-label="Primary">
+        <nav id="top-nav-links" className={`${styles.links} ${menuOpen ? styles.linksOpen : ''}`} aria-label="Primary">
           <Link href="/dashboard" className={styles.link}>
             Dashboard
           </Link>
@@ -70,6 +87,9 @@ export default function TopNav() {
           </Link>
           <Link href="/automated" className={styles.link}>
             Auto Trade
+          </Link>
+          <Link href="/watchlist" className={`${styles.link} ${styles.mobileOnly}`}>
+            Watchlist
           </Link>
         </nav>
 
@@ -97,6 +117,18 @@ export default function TopNav() {
               </Link>
             </>
           )}
+          <button
+            type="button"
+            className={styles.menuButton}
+            onClick={() => setMenuOpen((open) => !open)}
+            aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={menuOpen}
+            aria-controls="top-nav-links"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              {menuOpen ? <path d="M6 6l12 12M18 6L6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
+            </svg>
+          </button>
         </div>
       </div>
     </header>

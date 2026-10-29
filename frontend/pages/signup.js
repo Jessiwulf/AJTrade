@@ -56,6 +56,10 @@ export default function Signup() {
                 autoComplete="new-password"
               />
             </div>
+            <p className={styles.notice}>
+              By signing up you confirm you have read the <Link href="/privacy">Privacy Notice</Link>, which explains what
+              personal data AJTrade collects, why, and how to delete it. AI outlooks in AJTrade are not investment advice.
+            </p>
             <button className={styles.primary} type="submit">Sign up</button>
           </form>
 
