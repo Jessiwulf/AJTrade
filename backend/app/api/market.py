@@ -19,6 +19,10 @@ _RANGE_MAP = {
     'month': ('1mo', '1d'),
     'year': ('1y', '1d'),
     'all': ('max', '1wk'),
+    # Internal only (bot backtests): daily bars for the 180-day training window plus the test period.
+    'two_years': ('2y', '1d'),
+    'ten_years': ('10y', '1d'),
+    'max_daily': ('max', '1d'),
 }
 
 
@@ -219,6 +223,12 @@ def _fetch_yahoo_chart(symbol: str, range_name: str) -> dict:
         'events': 'div,splits',
         'corsDomain': 'finance.yahoo.com',
     }
+    if range_name == 'max_daily':
+        # Yahoo answers range=max with weekly/monthly bars even when 1d is asked; an explicit date
+        # span returns real daily bars for the whole history.
+        params.pop('range')
+        params['period1'] = 0
+        params['period2'] = int(datetime.now(timezone.utc).timestamp())
     headers = {
         'accept': 'application/json,text/plain,*/*',
         'accept-language': 'en-US,en;q=0.9',

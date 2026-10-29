@@ -180,6 +180,13 @@ except Exception as e:
     logger.warning("Trading bot router not loaded: %s", e)
 
 try:
+    from app.api import backtest as backtest_router
+
+    app.include_router(backtest_router.router, prefix='/api/bot')
+except Exception as e:
+    logger.warning("Backtest router not loaded: %s", e)
+
+try:
     from app.api import notifications as notifications_router
 
     app.include_router(notifications_router.router, prefix='/api/notifications')

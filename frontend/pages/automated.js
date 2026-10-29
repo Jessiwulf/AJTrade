@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import AppShell from '../components/AppShell'
 import BotBehaviorPreview, { DCA_INTERVALS, DCA_STRATEGY, STRATEGY_RULES } from '../components/BotBehaviorPreview'
+import BacktestPanel from '../components/BacktestPanel'
 import InfoTip from '../components/InfoTip'
 import { apiFetch } from '../lib/api'
 import { symbolProvider, useBroker } from '../lib/broker'
@@ -20,12 +21,13 @@ const DEFAULT_RULESET = {
     [DEFAULT_ASSET]: {
       isActive: false,
       strategy: 'Trend Following',
-      stopLossPct: 2,
-      trailingStopLossPct: 1.2,
-      takeProfitPct: 5,
+      stopLossPct: 5,
+      trailingStopLossPct: 0,
+      takeProfitPct: 0,
       maxCapitalPerTrade: 1000,
       maxDailyLossLimit: 500,
       dcaIntervalHours: 24,
+      backtestCheck: true,
     },
   },
   activePositions: [],
@@ -45,9 +47,10 @@ const STRATEGY_INFO = {
 // The slider covers the everyday range precisely; typing allows up to `max` for long-term holders.
 // Switching an exit off saves 0 (the backend treats 0 as "no exit").
 const PCT_LIMITS = {
-  stopLossPct: { min: 0.2, sliderMax: 20, max: 90, fallback: 2 },
-  trailingStopLossPct: { min: 0.1, sliderMax: 30, max: 90, fallback: 1.2 },
-  takeProfitPct: { min: 0.5, sliderMax: 50, max: 1000, fallback: 5 },
+  // Values used when an exit is switched back on (backtests: tighter ones sell on everyday noise).
+  stopLossPct: { min: 0.2, sliderMax: 20, max: 90, fallback: 5 },
+  trailingStopLossPct: { min: 0.1, sliderMax: 30, max: 90, fallback: 5 },
+  takeProfitPct: { min: 0.5, sliderMax: 50, max: 1000, fallback: 10 },
 }
 
 const RISK_INFO = {
@@ -202,16 +205,17 @@ function ensureAssetRule(rules, asset) {
   return {
     isActive: false,
     strategy: 'Trend Following',
-    stopLossPct: 2,
-    trailingStopLossPct: 1.2,
-    takeProfitPct: 5,
+    stopLossPct: 5,
+    trailingStopLossPct: 0,
+    takeProfitPct: 0,
     maxCapitalPerTrade: 1000,
     maxDailyLossLimit: 500,
     dcaIntervalHours: 24,
+    backtestCheck: true,
   }
 }
 
-// Let load failures surface as SWR errors: silently returning defaults would show "bot off, 2/1.2/5%"
+// Let load failures surface as SWR errors: silently returning defaults would show "bot off, 5% stop"
 // as if those were the saved rules, and saving that draft would overwrite the real ones.
 async function fetchBotRules() {
   const data = await apiFetch('/api/bot/rules')
@@ -227,6 +231,7 @@ const RULE_FIELDS = [
   'maxCapitalPerTrade',
   'maxDailyLossLimit',
   'dcaIntervalHours',
+  'backtestCheck',
 ]
 
 function sameField(a, b) {
@@ -244,7 +249,9 @@ function rulesDiffer(draft, saved) {
   for (const asset of assets) {
     const a = ensureAssetRule(draft, asset)
     const b = ensureAssetRule(saved, asset)
-    if (RULE_FIELDS.some((field) => !sameField(a[field], b[field]))) return true
+    // The backtest check is on unless explicitly switched off (older rules have no value).
+    const value = (rule, field) => (field === 'backtestCheck' ? rule[field] !== false : rule[field])
+    if (RULE_FIELDS.some((field) => !sameField(value(a, field), value(b, field)))) return true
   }
   return false
 }
@@ -306,6 +313,9 @@ export default function Automated() {
   draftRef.current = draftRules
   const draftBaseRef = useRef(draftBase)
   draftBaseRef.current = draftBase
+
+  // Saved backtest results (bot gate) for each asset; a quick database read.
+  const { data: backtestStatus } = useSWR('/api/bot/backtest/status', { refreshInterval: 30_000, revalidateOnFocus: false })
 
   const hasChanges = useMemo(
     () => Boolean(draftBase) && rulesDiffer(draftRules, rules),
@@ -549,10 +559,11 @@ export default function Automated() {
           {autoConfigNotice ? (
             <div className={styles.autoNotice} role="status">
               <div className={styles.autoNoticeBody}>
-                <strong>Set up from AI Insights for {autoConfigNotice.asset}</strong>
+                <strong>{autoConfigNotice.source === 'backtest' ? 'Tuned by backtest' : 'Set up from AI Insights'} for {autoConfigNotice.asset}</strong>
                 <span>
-                  {autoConfigNotice.rule.strategy} · stop-loss {autoConfigNotice.rule.stopLossPct}% · trailing{' '}
-                  {autoConfigNotice.rule.trailingStopLossPct}% · take-profit {autoConfigNotice.rule.takeProfitPct}% · bot on.
+                  {autoConfigNotice.rule.strategy} · stop-loss {formatExitPct(autoConfigNotice.rule.stopLossPct)} · trailing{' '}
+                  {formatExitPct(autoConfigNotice.rule.trailingStopLossPct)} · take-profit {formatExitPct(autoConfigNotice.rule.takeProfitPct)}
+                  {autoConfigNotice.source === 'backtest' ? '' : ' · bot on'}.
                   Nothing is saved yet: review it below, then press <b>Save Rules</b>, or <b>Undo</b> to discard it.
                 </span>
                 <ul>
@@ -744,6 +755,22 @@ export default function Automated() {
               active={Boolean(assetRule.isActive) && selectedAsset !== DEFAULT_ASSET}
               unsaved={hasChanges}
               position={activePositions[0]}
+            />
+
+            <BacktestPanel
+              asset={selectedAsset}
+              rule={assetRule}
+              gate={backtestStatus?.assets?.[selectedAsset]}
+              gateRule={backtestStatus}
+              checkOn={assetRule.backtestCheck !== false}
+              onToggleCheck={(on) => updateAssetRule('backtestCheck', on)}
+              unsaved={hasChanges}
+              disabled={selectedAsset === DEFAULT_ASSET}
+              onApplyTuned={(config) => {
+                // Tuned strategy + exits become unsaved changes (Save Rules / Undo apply); on/off is kept.
+                ;['strategy', 'stopLossPct', 'trailingStopLossPct', 'takeProfitPct'].forEach((key) => updateAssetRule(key, config.rule[key]))
+                setAutoConfigNotice({ ...config, source: 'backtest' })
+              }}
             />
           </section>
 

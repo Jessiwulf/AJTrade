@@ -269,6 +269,18 @@ async def _run_bot_for_insight(owner: str, symbol: str, insight: Dict[str, Any])
     side, reason = decide_strategy_side(strategy, insight, BOT_MIN_SIGNAL_CONFIDENCE)
     if side is None:
         return
+    if side == 'BUY':
+        # Backtest gate: only open positions on an AI outlook when these saved settings won 70%+ of
+        # their trades over the past year (sells and exits are never blocked).
+        from app.core import backtest_store
+
+        try:
+            gate = await backtest_store.gate_status(owner, symbol, rule)
+        except Exception as exc:
+            logger.warning('backtest_gate_failed owner=%s symbol=%s error=%s', owner, symbol, exc)
+            return
+        if gate['state'] in ('fail', 'pending'):
+            return
     if side == 'SELL':
         # The bot only sells shares it bought; with none, a SELL signal is a HOLD for the bot, so
         # don't fill the audit log with rejections.
@@ -441,6 +453,18 @@ async def refresh_watchlists_job() -> None:
     await notify_trade_executions_job()
 
 
+async def backtest_refresh_job() -> None:
+    """Keeps saved backtests (bot gate, tuned settings) fresh: one asset per run, at most daily."""
+    try:
+        from app.core.backtest_store import refresh_tick
+
+        done = await refresh_tick()
+        if done:
+            logger.info('backtest_refresh %s', done)
+    except Exception as exc:
+        logger.warning('backtest_refresh_failed error=%s', exc)
+
+
 async def news_history_job() -> None:
     """Fills the Analytics heatmap's 30 days of news sentiment from Alpaca news (see app.core.news_history)."""
     try:
@@ -496,6 +520,18 @@ def start_scheduler() -> None:
                 # First run shortly after startup, so a fresh deploy starts filling the heatmap.
                 next_run_time=_now_utc() + timedelta(seconds=20),
             )
+        from app.core.backtest_store import REFRESH_INTERVAL_SECONDS
+
+        scheduler.add_job(
+            backtest_refresh_job,
+            trigger='interval',
+            seconds=REFRESH_INTERVAL_SECONDS,
+            id='backtest-refresh',
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            next_run_time=_now_utc() + timedelta(seconds=45),
+        )
         scheduler.start()
         _scheduler = scheduler
         logger.info(

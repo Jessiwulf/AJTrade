@@ -1,0 +1,363 @@
+.panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--aj-border);
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.head {
+  display: grid;
+  gap: 2px;
+}
+
+.title {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--aj-text);
+}
+
+.sub {
+  font-size: 12.5px;
+  color: var(--aj-text-muted);
+}
+
+.gateRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gateRow .gate {
+  flex: 1 1 320px;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--aj-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.switchTrack {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--aj-border);
+  transition: background 0.15s ease;
+}
+
+.switchThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.switch input:checked + .switchTrack {
+  background: var(--aj-positive);
+}
+
+.switch input:checked + .switchTrack .switchThumb {
+  transform: translateX(16px);
+}
+
+.switch input:focus-visible + .switchTrack {
+  outline: 2px solid var(--aj-indigo);
+  outline-offset: 2px;
+}
+
+.gate {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-surface);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--aj-text);
+}
+
+.gateOk {
+  border-color: color-mix(in srgb, var(--aj-positive) 45%, var(--aj-border));
+}
+
+.gateBad {
+  border-color: color-mix(in srgb, var(--aj-negative) 40%, var(--aj-border));
+}
+
+.gateWait {
+  color: var(--aj-text-muted);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.segment {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 12px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-surface);
+}
+
+.segment button {
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--aj-text-muted);
+  cursor: pointer;
+}
+
+.segment .segmentOn {
+  background: var(--aj-bg);
+  color: var(--aj-text);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.cash {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--aj-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cash input {
+  width: 140px;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--aj-border);
+  border-radius: 10px;
+  background: var(--aj-bg);
+  color: var(--aj-text);
+  font-size: 14px;
+}
+
+.run {
+  height: 38px;
+  padding: 0 18px;
+  border: 1px solid var(--aj-accent-border);
+  border-radius: 999px;
+  background: var(--aj-cta-gradient);
+  color: var(--aj-ink);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.tune {
+  height: 38px;
+  padding: 0 16px;
+  border: 1px solid var(--aj-border-strong, var(--aj-border));
+  border-radius: 999px;
+  background: var(--aj-bg);
+  color: var(--aj-text);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.tune:disabled,
+.run:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.results {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.headline {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--aj-border);
+  background: var(--aj-surface);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--aj-text);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tiles > div {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--aj-border);
+  border-radius: 12px;
+  background: var(--aj-bg);
+  min-width: 0;
+}
+
+.tiles span {
+  font-size: 11.5px;
+  color: var(--aj-text-muted);
+}
+
+.tiles strong {
+  font-size: 18px;
+  letter-spacing: -0.02em;
+  color: var(--aj-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.tiles small {
+  font-size: 11px;
+  color: var(--aj-text-muted);
+}
+
+.chart {
+  width: 100%;
+  height: 240px;
+}
+
+.note,
+.warn,
+.stale,
+.error,
+.fine {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.note,
+.fine {
+  color: var(--aj-text-muted);
+}
+
+.fine {
+  font-size: 11.5px;
+}
+
+.warn,
+.stale {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--aj-accent-border-strong);
+  background: var(--aj-accent-soft);
+  color: var(--aj-ink);
+}
+
+.error {
+  color: var(--aj-negative);
+  font-weight: 700;
+}
+
+.trades {
+  border: 1px solid var(--aj-border);
+  border-radius: 12px;
+  background: var(--aj-bg);
+}
+
+.trades summary {
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--aj-text);
+  cursor: pointer;
+}
+
+.tableWrap {
+  max-height: 320px;
+  overflow: auto;
+  border-top: 1px solid var(--aj-border);
+}
+
+.tableWrap table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.tableWrap th,
+.tableWrap td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--aj-border);
+  text-align: left;
+  color: var(--aj-text);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.tableWrap th {
+  position: sticky;
+  top: 0;
+  background: var(--aj-bg);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--aj-text-muted);
+}
+
+.tableWrap .why {
+  white-space: normal;
+  min-width: 220px;
+  color: var(--aj-text-muted);
+}
+
+.pos {
+  color: var(--aj-positive) !important;
+}
+
+.neg {
+  color: var(--aj-negative) !important;
+}
+
+@media (max-width: 640px) {
+  .segment button {
+    padding: 7px 9px;
+  }
+
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cash input {
+    width: 120px;
+  }
+
+  .chart {
+    height: 200px;
+  }
+}

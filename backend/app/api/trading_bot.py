@@ -133,9 +133,10 @@ def _exit_trigger(
 def _default_rule() -> Dict[str, Any]:
     return {
         "strategy": "Trend Following",
-        "stopLossPct": 2.0,
-        "trailingStopLossPct": 1.2,
-        "takeProfitPct": 5.0,
+        # Backtests: a tight 1.2% trailing stop / 5% target sold on ordinary daily wiggles.
+        "stopLossPct": 5.0,
+        "trailingStopLossPct": 0.0,
+        "takeProfitPct": 0.0,
         "maxCapitalPerTrade": 1000.0,
         "maxDailyLossLimit": 500.0,
     }
@@ -184,9 +185,9 @@ async def _ensure_schema() -> None:
             "strategy text NOT NULL DEFAULT 'Trend Following',"
             "is_active boolean NOT NULL DEFAULT false,"
             "mode text NOT NULL DEFAULT 'paper' CHECK (mode IN ('paper', 'live')),"
-            "stop_loss_pct numeric(8,4) NOT NULL DEFAULT 2.0,"
-            "trailing_stop_pct numeric(8,4) NOT NULL DEFAULT 1.2,"
-            "take_profit_pct numeric(8,4) NOT NULL DEFAULT 5.0,"
+            "stop_loss_pct numeric(8,4) NOT NULL DEFAULT 5.0,"
+            "trailing_stop_pct numeric(8,4) NOT NULL DEFAULT 0,"
+            "take_profit_pct numeric(8,4) NOT NULL DEFAULT 0,"
             "max_capital numeric(18,2) NOT NULL DEFAULT 1000.00,"
             "max_daily_loss numeric(18,2) NOT NULL DEFAULT 500.00,"
             "created_at timestamptz DEFAULT now(),"
@@ -243,6 +244,10 @@ async def _ensure_schema() -> None:
             f"NOT NULL DEFAULT {DEFAULT_DCA_INTERVAL_HOURS}"
         )
     )
+    # Per-asset switch for the backtest check (see app.core.backtest_store); on by default.
+    await db.execute(
+        query="ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS backtest_check boolean NOT NULL DEFAULT true"
+    )
     await db.execute(
         query="CREATE INDEX IF NOT EXISTS idx_trading_rules_owner_asset ON trading_rules(owner_id, asset_symbol)"
     )
@@ -266,12 +271,14 @@ class AssetRuleConfig(BaseModel):
     # Per-asset bot switch; None falls back to the payload-level botActive.
     isActive: Optional[bool] = None
     # 0 turns an exit off (long-term / DCA holders).
-    stopLossPct: float = Field(default=2.0, ge=0, lt=100)
-    trailingStopLossPct: float = Field(default=1.2, ge=0, lt=100)
-    takeProfitPct: float = Field(default=5.0, ge=0, le=1000)
+    stopLossPct: float = Field(default=5.0, ge=0, lt=100)
+    trailingStopLossPct: float = Field(default=0.0, ge=0, lt=100)
+    takeProfitPct: float = Field(default=0.0, ge=0, le=1000)
     maxCapitalPerTrade: float = Field(default=1000.0, ge=0)
     maxDailyLossLimit: float = Field(default=500.0, ge=0)
     dcaIntervalHours: int = Field(default=DEFAULT_DCA_INTERVAL_HOURS, ge=1, le=24 * 31)
+    # Off = the bot buys on the AI outlook without the past-year backtest check.
+    backtestCheck: bool = True
 
 
 class BotRulesPayload(BaseModel):
@@ -353,7 +360,7 @@ async def _load_rule(owner_id: str, asset_symbol: str) -> Optional[Dict[str, Any
     row = await db.fetch_one(
         query=(
             "SELECT asset_symbol, strategy, is_active, mode, stop_loss_pct, trailing_stop_pct, "
-            "take_profit_pct, max_capital, max_daily_loss, dca_interval_hours "
+            "take_profit_pct, max_capital, max_daily_loss, dca_interval_hours, backtest_check "
             "FROM trading_rules WHERE owner_id = :owner_id AND asset_symbol = :asset_symbol"
         ),
         values={"owner_id": owner_id, "asset_symbol": asset_symbol},
@@ -1275,6 +1282,7 @@ def _symbol_rule_to_ui(rule_row: Dict[str, Any]) -> Dict[str, Any]:
         "maxCapitalPerTrade": float(rule_row.get("max_capital") or 0),
         "maxDailyLossLimit": float(rule_row.get("max_daily_loss") or 0),
         "dcaIntervalHours": int(rule_row.get("dca_interval_hours") or DEFAULT_DCA_INTERVAL_HOURS),
+        "backtestCheck": rule_row.get("backtest_check") is not False,
     }
 
 
@@ -1284,7 +1292,7 @@ async def _build_rules_response(owner_id: str) -> Dict[str, Any]:
     rows = await db.fetch_all(
         query=(
             "SELECT asset_symbol, strategy, is_active, mode, stop_loss_pct, trailing_stop_pct, "
-            "take_profit_pct, max_capital, max_daily_loss, dca_interval_hours, updated_at "
+            "take_profit_pct, max_capital, max_daily_loss, dca_interval_hours, backtest_check, updated_at "
             "FROM trading_rules WHERE owner_id = :owner_id ORDER BY updated_at DESC"
         ),
         values={"owner_id": owner_id},
@@ -1381,8 +1389,8 @@ async def create_or_update_rules(payload: BotRulesPayload, user=Depends(get_curr
         await db.execute(
             query=(
                 "INSERT INTO trading_rules "
-                "(owner_id, asset_symbol, strategy, is_active, mode, stop_loss_pct, trailing_stop_pct, take_profit_pct, max_capital, max_daily_loss, dca_interval_hours, updated_at) "
-                "VALUES (:owner_id, :asset_symbol, :strategy, :is_active, :mode, :stop_loss_pct, :trailing_stop_pct, :take_profit_pct, :max_capital, :max_daily_loss, :dca_interval_hours, now()) "
+                "(owner_id, asset_symbol, strategy, is_active, mode, stop_loss_pct, trailing_stop_pct, take_profit_pct, max_capital, max_daily_loss, dca_interval_hours, backtest_check, updated_at) "
+                "VALUES (:owner_id, :asset_symbol, :strategy, :is_active, :mode, :stop_loss_pct, :trailing_stop_pct, :take_profit_pct, :max_capital, :max_daily_loss, :dca_interval_hours, :backtest_check, now()) "
                 "ON CONFLICT (owner_id, asset_symbol) DO UPDATE SET "
                 "strategy = EXCLUDED.strategy, "
                 "is_active = EXCLUDED.is_active, "
@@ -1393,6 +1401,7 @@ async def create_or_update_rules(payload: BotRulesPayload, user=Depends(get_curr
                 "max_capital = EXCLUDED.max_capital, "
                 "max_daily_loss = EXCLUDED.max_daily_loss, "
                 "dca_interval_hours = EXCLUDED.dca_interval_hours, "
+                "backtest_check = EXCLUDED.backtest_check, "
                 "updated_at = now()"
             ),
             values={
@@ -1407,8 +1416,28 @@ async def create_or_update_rules(payload: BotRulesPayload, user=Depends(get_curr
                 "max_capital": config.maxCapitalPerTrade,
                 "max_daily_loss": config.maxDailyLossLimit,
                 "dca_interval_hours": config.dcaIntervalHours,
+                "backtest_check": config.backtestCheck,
             },
         )
+
+    # Re-test changed settings in the background so the backtest gate reflects them shortly.
+    try:
+        from app.core import backtest_store
+
+        await backtest_store.refresh_changed(owner_id, {
+            symbol: {
+                "is_active": config.isActive if config.isActive is not None else payload.botActive,
+                "strategy": config.strategy,
+                "stop_loss_pct": config.stopLossPct,
+                "trailing_stop_pct": config.trailingStopLossPct,
+                "take_profit_pct": config.takeProfitPct,
+                "dca_interval_hours": config.dcaIntervalHours,
+                "backtest_check": config.backtestCheck,
+            }
+            for symbol, config in sanitized_rules.items()
+        })
+    except Exception as exc:
+        logger.warning("backtest_refresh_on_save_failed owner=%s error=%s", owner_id, exc)
 
     return await _build_rules_response(owner_id)
 

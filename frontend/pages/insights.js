@@ -5,7 +5,7 @@ import { useRouter } from 'next/router'
 import AppShell from '../components/AppShell'
 import InfoTip from '../components/InfoTip'
 import { STRATEGY_RULES } from '../components/BotBehaviorPreview'
-import { storeAutoConfig, suggestBotConfig } from '../lib/autoConfig'
+import { storeAutoConfig, suggestBotConfig, tunedBotConfig } from '../lib/autoConfig'
 import { useBroker, useProviderSymbols } from '../lib/broker'
 import { unitWord, usdOptions } from '../lib/format'
 import { NOT_ADVICE, outlookLabel } from '../lib/outlook'
@@ -30,6 +30,7 @@ const TIPS = {
       <span><strong>Confidence</strong> = how sure the model is of its direction: <code>max(up probability, 1 − up probability) × 100</code>. 50% is a coin flip.</span>
       <span><strong>Up probability</strong> = the model&apos;s chance that the next trading day closes higher. The bar shows it against the Bearish and Bullish lines; in between is Neutral.</span>
       <span>Your trading bot only acts on a Bullish or Bearish outlook with <strong>{BOT_MIN_CONFIDENCE}%+</strong> confidence, following the rules you set.</span>
+      <span><strong>Backtest check</strong>: the bot also only <em>buys</em> when the asset&apos;s saved bot settings pass a backtest on the past year (at least 60% of 3 or more simulated trades closed in profit). Selling and stop-losses are never blocked. Backtests run in the background once a day. A backtest replays past prices; it does not predict or guarantee future results.</span>
       <span><strong>Automate</strong> opens the Automated page with this asset set up as shown below. Nothing is saved until you press <strong>Save Rules</strong> there.</span>
     </>
   ),
@@ -253,7 +254,8 @@ const STRATEGY_SUMMARY = {
   'AI Momentum + Sentiment': 'Only trades when the AI and the news point the same way.',
 }
 
-function AutomatePlan({ item, suggestion, readiness }) {
+
+function AutomatePlan({ item, suggestion, readiness, tuning, tuneFailed, onTune }) {
   const { strategy, stopLossPct, trailingStopLossPct, takeProfitPct } = suggestion.rule
   const rules = STRATEGY_RULES[strategy]
   const price = Number(item.latest_price)
@@ -271,7 +273,8 @@ function AutomatePlan({ item, suggestion, readiness }) {
       pct: takeProfitPct,
       note: hasPrice ? `sells at ${formatMoney(price * (1 + takeProfitPct / 100))}` : 'above buy price',
     },
-  ]
+  ].map((exit) => (Number(exit.pct) > 0 ? exit : { ...exit, note: 'not used' }))
+  const tuned = suggestion.tuned
 
   return (
     <div className={styles.automatePanel}>
@@ -280,7 +283,8 @@ function AutomatePlan({ item, suggestion, readiness }) {
         <InfoTip label="Automate" align="end">
           <span><strong>Automate</strong> opens the Automated page with {item.symbol} set up like this and its bot switched on. Nothing is saved until you press <strong>Save Rules</strong>; <strong>Undo</strong> reverts it.</span>
           {rules ? <span><strong>{strategy}</strong>: buys when {rules.buy}; sells the bot&apos;s {units} when {rules.sell}.</span> : null}
-          <span><strong>Stop-loss</strong>: sells if the price falls {stopLossPct}% below the bot&apos;s buy price. <strong>Trailing stop</strong>: once in profit, sells if the price drops {trailingStopLossPct}% from its highest point. <strong>Take-profit</strong>: sells when the price is {takeProfitPct}% above the buy price.{hasPrice ? ` Dollar levels assume a buy at today's ${formatMoney(price)}.` : ''}</span>
+          <span><strong>How these settings are picked</strong>: AJTrade backtests about 400 combinations of strategy and exits on the past year of {item.symbol} prices and keeps the one with the best simulated return among those that pass the backtest check, with a stop-loss always on. It searches the first 8 months, then re-checks the pick on the last 4 months. A backtest replays past prices; it does not predict or guarantee future results.</span>
+          <span><strong>Stop-loss</strong>: sells if the price falls {stopLossPct}% below the bot&apos;s buy price. <strong>Trailing stop</strong>: once in profit, sells if the price drops {trailingStopLossPct}% from its highest point. <strong>Take-profit</strong>: sells when the price is {takeProfitPct}% above the buy price. 0 = not used.{hasPrice ? ` Dollar levels assume a buy at today's ${formatMoney(price)}.` : ''}</span>
           {suggestion.reasons.map((reason) => <span key={reason}>Why: {reason}</span>)}
         </InfoTip>
       </p>
@@ -295,36 +299,132 @@ function AutomatePlan({ item, suggestion, readiness }) {
         {exits.map((exit) => (
           <div key={exit.name} className={styles.exitTile}>
             <span>{exit.name}</span>
-            <strong>{exit.pct}%</strong>
+            <strong>{Number(exit.pct) > 0 ? `${exit.pct}%` : 'Off'}</strong>
             <small>{exit.note}</small>
           </div>
         ))}
       </div>
+      {tuning ? (
+        <p className={styles.tuneNote}>Backtesting the past year to find settings that pass the check...</p>
+      ) : tuned ? (
+        <div className={`${styles.tuneNote} ${tuned.reached ? styles.tuneOk : styles.tuneMiss}`}>
+          <strong>{tuned.reached ? 'Passed the backtest check (past year)' : 'No settings passed the backtest check; these came closest'}</strong>
+          <span>
+            Simulated return {formatPct(tuned.full.return_pct)} vs buy &amp; hold {formatPct(tuned.full.hold_return_pct)}. Past results do not guarantee future results.
+          </span>
+        </div>
+      ) : tuneFailed ? (
+        <p className={styles.tuneNote}>Backtest unavailable right now, so these exits are sized to the asset&apos;s typical daily move instead.</p>
+      ) : onTune ? (
+        <div className={styles.tuneNote}>
+          <span>These exits are sized to the asset&apos;s typical daily move. Want settings checked against the past year instead?</span>
+          <button type="button" className={styles.tuneBtn} onClick={onTune}>Find settings with a backtest (about 10 s)</button>
+        </div>
+      ) : null}
     </div>
   )
 }
 
-function InsightCard({ item, onAutomate }) {
+// Backtest check: the bot only buys on an AI outlook when the asset's saved settings pass a
+// past-year backtest (computed in the background, never on this page). Wording stays neutral: a
+// backtest describes the past and is not a promise about future trades.
+function gateInfo(asset, botReady) {
+  const tuned = asset?.tuned
+  switch (asset?.gate) {
+    case 'pass':
+      return { tone: 'ok', mark: '✓', text: 'Backtest check passed for your saved bot settings (past-year simulation).', pass: true }
+    case 'fail':
+      return { tone: 'bad', mark: '✗', text: 'Your saved bot settings did not pass the backtest check, so the bot will not open new trades here. Try Auto-tune on Auto Trade.', pass: false }
+    case 'pending':
+      return { tone: 'wait', mark: '…', text: 'Your saved bot settings are being backtested in the background.', pass: false }
+    case 'off':
+      return { tone: 'wait', mark: '–', text: 'Dollar-cost averaging ignores the AI outlook, so no backtest check.', pass: true }
+    case 'disabled':
+      return { tone: 'wait', mark: '–', text: 'Backtest check is off for your bot on this asset, so it trades on the AI outlook alone.', pass: true }
+    default:
+      if (tuned?.reached && tuned?.rule) {
+        return { tone: 'ok', mark: '✓', text: 'No bot yet. Automate uses settings that passed the backtest check (past-year simulation).', pass: true }
+      }
+      if (tuned?.rule) {
+        return { tone: 'bad', mark: '✗', text: 'No bot settings passed the backtest check for this asset, so a bot here would not open trades on the AI outlook.', pass: false }
+      }
+      return { tone: 'wait', mark: '…', text: 'The backtest check for this asset is queued in the background.', pass: botReady }
+  }
+}
+
+const IMPACT_RE = /\(([\d.]+)% impact\)/
+
+// Rationale points from data the insight already has (no extra model work): the model drivers
+// ranked by impact, minus the 3 weakest (at least 2 kept), then the typical daily move and where the
+// price sits in its 30-day range.
+function buildRationale(item, base) {
+  const said = base.join(' ').toLowerCase()
+  const driverLines = base.filter((r) => IMPACT_RE.test(r))
+  const otherLines = base.filter((r) => !IMPACT_RE.test(r))
+  for (const d of item.drivers || []) {
+    const label = String(d.label || '').trim()
+    const impact = Number(d.impact_pct)
+    if (!label || !Number.isFinite(impact) || said.includes(label.toLowerCase())) continue
+    driverLines.push(`The ${label} is ${impact >= 0 ? 'supporting upside potential' : 'adding downside pressure'} (${Math.abs(impact).toFixed(1)}% impact).`)
+  }
+  const impactOf = (line) => Number(line.match(IMPACT_RE)?.[1] || 0)
+  const keep = Math.max(2, driverLines.length - 3)
+  const lines = [...otherLines, ...driverLines.sort((a, b) => impactOf(b) - impactOf(a)).slice(0, keep)]
+  const vol = Number(item.volatility_pct)
+  if (Number.isFinite(vol) && vol > 0) {
+    lines.push(`It typically moves about ${vol.toFixed(1)}% in a day, ${vol >= 3 ? 'a volatile asset' : vol >= 1.5 ? 'a moderate amount' : 'a fairly calm asset'}.`)
+  }
+  const closes = (item.price_history || []).map((p) => Number(p?.close)).filter((v) => Number.isFinite(v) && v > 0)
+  if (closes.length >= 5) {
+    const low = Math.min(...closes)
+    const high = Math.max(...closes)
+    const last = closes[closes.length - 1]
+    if (high > low) {
+      const pos = (last - low) / (high - low)
+      const where = pos >= 0.8 ? 'near the top' : pos <= 0.2 ? 'near the bottom' : 'in the middle'
+      lines.push(`The price is ${where} of its 30-day range (${formatMoney(low)} to ${formatMoney(high)}).`)
+    }
+  }
+  return lines
+}
+
+function InsightCard({ item, onAutomate, backtestAsset }) {
   const signal = String(item.signal || 'HOLD').toUpperCase()
   const unavailable = Boolean(item.unavailable)
   const fallback = Boolean(item.model_fallback)
   const confidence = item.confidence
   const probUp = item.probability_up != null ? Number(item.probability_up) * 100 : null
   const botReady = !fallback && (signal === 'BUY' || signal === 'SELL') && Number(confidence) >= BOT_MIN_CONFIDENCE
-  const suggestion = unavailable ? null : suggestBotConfig(item)
+  // Backtest tuning only runs when the user asks for it on this card: it trains the
+  // model ~50 times and tries ~400 settings, too heavy to start for every card on page load.
+  // The background job saves tuned settings for every watchlist asset daily; the button below only
+  // matters when that has not happened yet.
+  const savedTuned = backtestAsset?.tuned?.rule ? backtestAsset.tuned : null
+  const [tuneRequested, setTuneRequested] = useState(false)
+  const { data: fetchedTuned, error: tuneError } = useSWR(
+    unavailable || savedTuned || !tuneRequested ? null : `/api/bot/autoconfig?symbol=${encodeURIComponent(item.symbol)}`,
+    { revalidateOnFocus: false, revalidateOnReconnect: false, dedupingInterval: 30 * 60 * 1000, shouldRetryOnError: false },
+  )
+  const tunedData = savedTuned || fetchedTuned
+  const tuning = tuneRequested && !unavailable && !tunedData && !tuneError
+  const suggestion = unavailable ? null : tunedData ? tunedBotConfig(item, tunedData) : suggestBotConfig(item)
+  const gate = gateInfo(backtestAsset, botReady)
   const readiness = {
-    ready: botReady,
-    text: botReady
-      ? 'Strong enough for the bot to act.'
-      : fallback
+    ready: botReady && gate.pass,
+    text: !botReady
+      ? fallback
         ? 'The bot skips rule-based estimates.'
-        : `The bot waits: needs a Bullish or Bearish outlook at ${BOT_MIN_CONFIDENCE}%+ confidence.`,
+        : `The bot waits: needs a Bullish or Bearish outlook at ${BOT_MIN_CONFIDENCE}%+ confidence.`
+      : gate.pass
+        ? 'Strong enough for the bot to act.'
+        : 'Confident enough, but the bot waits for the backtest check.',
   }
   const updated = timeAgo(item.generated_at)
   const newsLabel = unavailable ? null : sentimentLabel(item.latest_sentiment_score)
   const verdictTone = signal === 'BUY' ? styles.verdictBuy : signal === 'SELL' ? styles.verdictSell : ''
   // The trend and news lines are already shown as chips above the list.
-  const rationale = (item.rationale || []).filter((r) => !(newsLabel && /^(price trend|news sentiment):/i.test(r)))
+  const baseRationale = (item.rationale || []).filter((r) => !(newsLabel && /^(price trend|news sentiment):/i.test(r)))
+  const rationale = unavailable ? baseRationale : buildRationale(item, baseRationale)
 
   return (
     <section className={styles.card} aria-label={`${item.symbol} insight`}>
@@ -378,8 +478,8 @@ function InsightCard({ item, onAutomate }) {
           )}
           {suggestion ? (
             <div className={styles.verdictAction}>
-              <button type="button" className={styles.primary} onClick={() => onAutomate(suggestion)}>
-                Automate {item.symbol} →
+              <button type="button" className={styles.primary} onClick={() => onAutomate(suggestion)} disabled={tuning}>
+                {tuning ? 'Tuning settings...' : `Automate ${item.symbol} →`}
               </button>
             </div>
           ) : null}
@@ -409,9 +509,24 @@ function InsightCard({ item, onAutomate }) {
           ) : (
             <p className={styles.muted}>No written rationale for this asset yet.</p>
           )}
+          {unavailable ? null : (
+            <p className={`${styles.gateBadge} ${styles[`gate_${gate.tone}`] || ''}`}>
+              <b aria-hidden="true">{gate.mark}</b>
+              <span>{gate.text}</span>
+            </p>
+          )}
         </div>
 
-        {suggestion ? <AutomatePlan item={item} suggestion={suggestion} readiness={readiness} /> : null}
+        {suggestion ? (
+          <AutomatePlan
+            item={item}
+            suggestion={suggestion}
+            readiness={readiness}
+            tuning={tuning}
+            tuneFailed={Boolean(tuneError)}
+            onTune={tuneRequested ? null : () => setTuneRequested(true)}
+          />
+        ) : null}
       </div>
     </section>
   )
@@ -420,6 +535,8 @@ function InsightCard({ item, onAutomate }) {
 export default function Insights() {
   const router = useRouter()
   const { data, error, isLoading } = useSWR('/api/ml/v2/watchlist/insights')
+  // Saved backtest results only (a quick database read); refreshed every minute while open.
+  const { data: backtestStatus } = useSWR('/api/bot/backtest/status', { refreshInterval: 60_000, revalidateOnFocus: false })
   // Only the active broker's assets (Alpaca: US stocks & crypto, Settrade: Thai SET stocks).
   const { provider } = useBroker()
   const { belongs } = useProviderSymbols(provider)
@@ -459,7 +576,14 @@ export default function Insights() {
             No watchlist insights available yet. Add assets on <Link href="/watchlist">Watchlist</Link> and optionally save a NewsAPI key on <Link href="/api-keys">API Management</Link>.
           </section>
         ) : null}
-        {items.map((item) => <InsightCard key={item.symbol} item={item} onAutomate={automate} />)}
+        {items.map((item) => (
+          <InsightCard
+            key={item.symbol}
+            item={item}
+            onAutomate={automate}
+            backtestAsset={backtestStatus?.assets?.[String(item.symbol).toUpperCase()]}
+          />
+        ))}
       </div>
     </AppShell>
   )

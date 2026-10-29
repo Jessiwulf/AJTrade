@@ -34,10 +34,15 @@ class MarketForecaster:
         buy_threshold: float = 0.55,
         sell_threshold: float = 0.45,
         random_state: int = 42,
+        n_jobs: Optional[int] = 1,
     ) -> None:
         self.buy_threshold = float(buy_threshold)
         self.sell_threshold = float(sell_threshold)
         self.random_state = int(random_state)
+        # One thread by default: on ~180 rows it trains 2.7x faster than LightGBM's all-cores default
+        # (26 ms vs 69 ms, measured in the backend container) while using ~1 core instead of ~6, so the
+        # every-few-minutes insight refresh and backtests don't max out the CPU. None = all cores.
+        self.n_jobs = n_jobs
 
         self.model = None
         self.feature_columns: List[str] = []
@@ -127,6 +132,7 @@ class MarketForecaster:
             min_gain_to_split=0.0,
             verbose=-1,
             random_state=self.random_state,
+            **({'n_jobs': self.n_jobs} if self.n_jobs is not None else {}),
         )
         model.fit(X_train, y_train)
 
